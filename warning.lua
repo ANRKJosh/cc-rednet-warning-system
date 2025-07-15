@@ -82,45 +82,40 @@ end
 local function eventHandler()
   updateDisplay()
   while true do
-    -- We'll capture all return values into a table for safety.
-    local returns = { parallel.waitForAny(
-      function()
-        local _, key = os.pullEvent("key")
-        return { eventType = "key_press", key = key }
-      end,
-      function()
-        local _, msg = rednet.receive("protocol_warning")
-        return { eventType = "rednet_message", message = msg }
-      end
-    ) }
-    
-    -- The event data table is the second value returned.
-    local eventData = returns[2]
+    -- Pull the next event from the queue, whatever it may be.
+    local event, p1, p2, p3 = os.pullEvent()
 
-    -- Add a "guard" to ensure eventData is not nil before we use it.
-    -- This handles the rare edge case that was causing the crash.
-    if eventData then
-      -- Handle keyboard input
-      if eventData.eventType == "key_press" then
-        if eventData.key == keys.c then
-          rednet.broadcast("cancel_warning", "protocol_warning")
-          cancelWarning()
-        else
-          rednet.broadcast("start_warning", "protocol_warning")
+    -- Check if the event was a key press
+    if event == "key" then
+      local key = p1 -- For "key" events, the first parameter is the key code.
+      
+      if key == keys.c then
+        rednet.broadcast("cancel_warning", "protocol_warning")
+        cancelWarning()
+      else
+        rednet.broadcast("start_warning", "protocol_warning")
+        startWarning()
+      end
+
+    -- Check if the event was a rednet message
+    elseif event == "rednet_message" then
+      -- For "rednet_message" events: p1 is senderID, p2 is the message, p3 is the protocol.
+      local message = p2
+      local protocol = p3
+      
+      -- Make sure the message is on the protocol we are using
+      if protocol == "protocol_warning" then
+        if message == "start_warning" then
           startWarning()
-        end
-      -- Handle incoming rednet messages
-      elseif eventData.eventType == "rednet_message" then
-        if eventData.message == "start_warning" then
-          startWarning()
-        elseif eventData.message == "cancel_warning" then
+        elseif message == "cancel_warning" then
           cancelWarning()
         end
       end
     end
-    -- If eventData was nil, the loop simply continues and waits for the next event.
+    -- Any other events (like mouse clicks) are simply ignored.
   end
 end
+
 -- Run the sound controller and event handler in parallel.
 -- The program will now run correctly until you terminate it (Ctrl+T).
 parallel.waitForAll(soundController, eventHandler)
