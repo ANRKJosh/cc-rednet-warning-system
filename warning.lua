@@ -82,8 +82,8 @@ end
 local function eventHandler()
   updateDisplay()
   while true do
-    -- CORRECTED: Capture the index and the returned table separately.
-    local index, eventData = parallel.waitForAny(
+    -- We'll capture all return values into a table for safety.
+    local returns = { parallel.waitForAny(
       function()
         local _, key = os.pullEvent("key")
         return { eventType = "key_press", key = key }
@@ -92,28 +92,35 @@ local function eventHandler()
         local _, msg = rednet.receive("protocol_warning")
         return { eventType = "rednet_message", message = msg }
       end
-    )
+    ) }
+    
+    -- The event data table is the second value returned.
+    local eventData = returns[2]
 
-    -- Handle keyboard input
-    if eventData.eventType == "key_press" then
-      if eventData.key == keys.c then
-        rednet.broadcast("cancel_warning", "protocol_warning")
-        cancelWarning()
-      else
-        rednet.broadcast("start_warning", "protocol_warning")
-        startWarning()
-      end
-    -- Handle incoming rednet messages
-    elseif eventData.eventType == "rednet_message" then
-      if eventData.message == "start_warning" then
-        startWarning()
-      elseif eventData.message == "cancel_warning" then
-        cancelWarning()
+    -- Add a "guard" to ensure eventData is not nil before we use it.
+    -- This handles the rare edge case that was causing the crash.
+    if eventData then
+      -- Handle keyboard input
+      if eventData.eventType == "key_press" then
+        if eventData.key == keys.c then
+          rednet.broadcast("cancel_warning", "protocol_warning")
+          cancelWarning()
+        else
+          rednet.broadcast("start_warning", "protocol_warning")
+          startWarning()
+        end
+      -- Handle incoming rednet messages
+      elseif eventData.eventType == "rednet_message" then
+        if eventData.message == "start_warning" then
+          startWarning()
+        elseif eventData.message == "cancel_warning" then
+          cancelWarning()
+        end
       end
     end
+    -- If eventData was nil, the loop simply continues and waits for the next event.
   end
 end
-
 -- Run the sound controller and event handler in parallel.
 -- The program will now run correctly until you terminate it (Ctrl+T).
 parallel.waitForAll(soundController, eventHandler)
