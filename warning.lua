@@ -1,27 +1,28 @@
 --[[
 ================================================================================
 -- Two-Way Modem Warning System for ComputerCraft --
+-- CORRECTED AND IMPROVED VERSION
 ================================================================================
 -- INSTRUCTIONS:
 -- 1. Save this code on two different computers in your world.
--- 2. Make sure both computers have a Wireless Modem attached to any side.
+-- 2. Make sure both computers have a Wireless Modem attached.
 -- 3. Run the program on both computers.
 --
 -- HOW TO USE:
 -- - Press any key on either computer to broadcast a warning.
 --   This will cause both computers to play an audible alarm.
 -- - To stop the alarm, press the 'c' key on either computer.
---
--- MODEM CONFIGURATION:
--- - The program uses channel 65530 for communication. You can change this
---   by modifying the 'modemChannel' variable below. Make sure the channel
---   is the same on both computers.
 ================================================================================
 ]]
 
 -- Configuration
 local modemChannel = 65530 -- The channel for modem communication.
 local isWarningActive = false -- Tracks the state of the warning.
+
+-- Open the modem on the specified channel.
+-- IMPORTANT: Change "right" to the side your modem is on!
+rednet.open("right") 
+rednet.host("protocol_warning", "warning_system")
 
 -- Function to print the status to the screen
 local function updateDisplay()
@@ -43,88 +44,76 @@ local function updateDisplay()
   print("Press any key to send a warning.")
   print("Press 'c' to cancel the warning.")
   term.setCursorPos(1, 10)
-  print("Listening for messages...")
+  print("System Ready. Listening for events...")
 end
 
--- Function to start the audible warning
+-- Actions are now simpler: they just change the state.
 local function startWarning()
   if not isWarningActive then
     isWarningActive = true
     updateDisplay()
-    -- Play a continuous alarm sound
-    parallel.waitForAny(
-      function()
-        while isWarningActive do
-          speaker.playNote("harp", 1, 1)
-          sleep(0.5)
-          speaker.playNote("harp", 1, 1.5)
-          sleep(0.5)
-        end
-      end,
-      function()
-        -- This function will handle the cancellation event
-        while isWarningActive do
-            local event, key = os.pullEvent("key")
-            if key == keys.c then
-                rednet.broadcast("cancel_warning", "protocol_warning")
-                isWarningActive = false
-            end
-        end
-      end
-    )
-    updateDisplay()
   end
 end
 
--- Function to cancel the warning
 local function cancelWarning()
   if isWarningActive then
     isWarningActive = false
     updateDisplay()
-    -- The parallel task in startWarning will see isWarningActive is false and stop.
   end
 end
 
--- Open the modem on the specified channel
-rednet.open("right") -- Assumes modem is on the right, change if needed.
-rednet.host("protocol_warning", "warning_system")
-
-
--- Main program loop
-updateDisplay()
-
-while true do
-  -- Use parallel API to listen for both keyboard presses and modem messages
-  local id, message, protocol = parallel.waitForAny(
-    function()
-      -- Listen for keyboard input
-      local event, key = os.pullEvent("key")
-      return { eventType = "key_press", key = key }
-    end,
-    function()
-      -- Listen for rednet messages
-      local senderID, msg, proto = rednet.receive("protocol_warning")
-      return { eventType = "rednet_message", sender = senderID, message = msg, protocol = proto }
-    end
-  )
-
-  -- Handle keyboard input
-  if id.eventType == "key_press" then
-    if id.key == keys.c then
-      -- Send a cancel message
-      rednet.broadcast("cancel_warning", "protocol_warning")
-      cancelWarning()
+-- This function will run in the background to handle sound.
+local function soundController()
+  while true do
+    if isWarningActive then
+      -- Play a two-tone alarm sound
+      speaker.playNote("harp", 1, 1)
+      sleep(0.5)
+      speaker.playNote("harp", 1, 1.5)
+      sleep(0.5)
     else
-      -- Send a warning message
-      rednet.broadcast("start_warning", "protocol_warning")
-      startWarning()
-    end
-  -- Handle incoming rednet messages
-  elseif id.eventType == "rednet_message" then
-    if id.message == "start_warning" then
-      startWarning()
-    elseif id.message == "cancel_warning" then
-      cancelWarning()
+      -- If the alarm is off, sleep briefly to prevent high CPU usage.
+      sleep(0.1)
     end
   end
 end
+
+-- This function will run in the background to handle events.
+local function eventHandler()
+  updateDisplay()
+  while true do
+    -- CORRECTED: Capture the index and the returned table separately.
+    local index, eventData = parallel.waitForAny(
+      function()
+        local _, key = os.pullEvent("key")
+        return { eventType = "key_press", key = key }
+      end,
+      function()
+        local _, msg = rednet.receive("protocol_warning")
+        return { eventType = "rednet_message", message = msg }
+      end
+    )
+
+    -- Handle keyboard input
+    if eventData.eventType == "key_press" then
+      if eventData.key == keys.c then
+        rednet.broadcast("cancel_warning", "protocol_warning")
+        cancelWarning()
+      else
+        rednet.broadcast("start_warning", "protocol_warning")
+        startWarning()
+      end
+    -- Handle incoming rednet messages
+    elseif eventData.eventType == "rednet_message" then
+      if eventData.message == "start_warning" then
+        startWarning()
+      elseif eventData.message == "cancel_warning" then
+        cancelWarning()
+      end
+    end
+  end
+end
+
+-- Run the sound controller and event handler in parallel.
+-- The program will now run correctly until you terminate it (Ctrl+T).
+parallel.waitForAll(soundController, eventHandler)
