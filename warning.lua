@@ -1,121 +1,126 @@
---[[
-================================================================================
--- Two-Way Modem Warning System for ComputerCraft --
--- CORRECTED AND IMPROVED VERSION
-================================================================================
--- INSTRUCTIONS:
--- 1. Save this code on two different computers in your world.
--- 2. Make sure both computers have a Wireless Modem attached.
--- 3. Run the program on both computers.
---
--- HOW TO USE:
--- - Press any key on either computer to broadcast a warning.
---   This will cause both computers to play an audible alarm.
--- - To stop the alarm, press the 'c' key on either computer.
-================================================================================
-]]
+-- Enhanced Two-Way Warning System
+-- Speaker + Modem required (expected on left/right)
+-- Redstone output on BACK when alarm is active
 
--- Configuration
-local modemChannel = 65530 -- The channel for modem communication.
-local isWarningActive = false -- Tracks the state of the warning.
+local protocol = "poggishtown_warning"
+local warning_active = false
+local modem_side = nil
+local speaker = peripheral.find("speaker")
+local alarm_start_time = nil
+local redstone_output_side = "back"
 
--- Open the modem on the specified channel.
--- IMPORTANT: Change "right" to the side your modem is on!
-rednet.open("right") 
-rednet.host("protocol_warning", "warning_system")
-
--- Function to print the status to the screen
-local function updateDisplay()
-  term.clear()
-  term.setCursorPos(1, 1)
-  print("===============================")
-  print("= Two-Way Warning System      =")
-  print("===============================")
-  term.setCursorPos(1, 5)
-  if isWarningActive then
-    term.setTextColor(colors.red)
-    print("STATUS: !! WARNING ACTIVE !!")
-  else
-    term.setTextColor(colors.green)
-    print("STATUS: System Idle")
-  end
-  term.setTextColor(colors.white)
-  term.setCursorPos(1, 7)
-  print("Press any key to send a warning.")
-  print("Press 'c' to cancel the warning.")
-  term.setCursorPos(1, 10)
-  print("System Ready. Listening for events...")
-end
-
--- Actions are now simpler: they just change the state.
-local function startWarning()
-  if not isWarningActive then
-    isWarningActive = true
-    updateDisplay()
-  end
-end
-
-local function cancelWarning()
-  if isWarningActive then
-    isWarningActive = false
-    updateDisplay()
-  end
-end
-
--- This function will run in the background to handle sound.
-local function soundController()
-  while true do
-    if isWarningActive then
-      -- Play a two-tone alarm sound
-      speaker.playNote("harp", 1, 1)
-      sleep(0.5)
-      speaker.playNote("harp", 1, 1.5)
-      sleep(0.5)
-    else
-      -- If the alarm is off, sleep briefly to prevent high CPU usage.
-      sleep(0.1)
-    end
-  end
-end
-
--- This function will run in the background to handle events.
-local function eventHandler()
-  updateDisplay()
-  while true do
-    -- Pull the next event from the queue, whatever it may be.
-    local event, p1, p2, p3 = os.pullEvent()
-
-    -- Check if the event was a key press
-    if event == "key" then
-      local key = p1 -- For "key" events, the first parameter is the key code.
-      
-      if key == keys.c then
-        rednet.broadcast("cancel_warning", "protocol_warning")
-        cancelWarning()
-      else
-        rednet.broadcast("start_warning", "protocol_warning")
-        startWarning()
-      end
-
-    -- Check if the event was a rednet message
-    elseif event == "rednet_message" then
-      -- For "rednet_message" events: p1 is senderID, p2 is the message, p3 is the protocol.
-      local message = p2
-      local protocol = p3
-      
-      -- Make sure the message is on the protocol we are using
-      if protocol == "protocol_warning" then
-        if message == "start_warning" then
-          startWarning()
-        elseif message == "cancel_warning" then
-          cancelWarning()
+-- Gradually louder air raid sound
+local function playAlarm()
+    local volume = 0.5
+    while warning_active do
+        if speaker then
+            speaker.playNote("bass", volume, 3)
+            sleep(0.2)
+            speaker.playNote("bass", volume, 6)
+            sleep(0.2)
+            speaker.playNote("bass", volume, 9)
+            sleep(0.4)
+            volume = math.min(2.0, volume + 0.05) -- Increase volume gradually
         end
-      end
     end
-    -- Any other events (like mouse clicks) are simply ignored.
-  end
 end
 
--- Run the sound controller and event handler in parallel.
--- The program will now run correctly until you terminate it (Ctrl+T).
-parallel.waitForAll(soundController, eventHandler)
+-- Format time string
+local function getTimeString()
+    local t = textutils.formatTime(os.time(), true)
+    return "Triggered at: " .. t
+end
+
+-- Draw status UI
+local function drawScreen()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("================================")
+    print("=  PoggishTown Warning System  =")
+    print("================================")
+    term.setCursorPos(1, 5)
+    if warning_active then
+        term.setTextColor(colors.red)
+        print("STATUS: !! WARNING ACTIVE !!")
+        term.setTextColor(colors.white)
+        if alarm_start_time then
+            print(getTimeString())
+        end
+    else
+        term.setTextColor(colors.green)
+        print("STATUS: System Idle")
+    end
+    term.setTextColor(colors.white)
+    term.setCursorPos(1, 8)
+    print("Press any key to send a warning.")
+    print("Press 'C' to cancel the warning.")
+    term.setCursorPos(1, 11)
+    print("System Ready. Listening for events...")
+end
+
+-- Broadcast over network
+local function broadcast(action)
+    rednet.broadcast({ type = "warning", action = action }, protocol)
+end
+
+-- Handle network message
+local function handleMessage(msg)
+    if msg.type == "warning" then
+        if msg.action == "start" and not warning_active then
+            warning_active = true
+            alarm_start_time = os.time()
+            redstone.setOutput(redstone_output_side, true)
+            drawScreen()
+            parallel.waitForAny(playAlarm)
+        elseif msg.action == "cancel" and warning_active then
+            warning_active = false
+            redstone.setOutput(redstone_output_side, false)
+            drawScreen()
+        end
+    end
+end
+
+-- Modem check
+local function init()
+    for _, side in pairs(peripheral.getNames()) do
+        if peripheral.getType(side) == "modem" then
+            modem_side = side
+            rednet.open(side)
+            print("Modem found on " .. side)
+            break
+        end
+    end
+
+    if not modem_side then
+        error("No modem found. Please attach one on left or right.")
+    end
+    if not speaker then
+        error("No speaker found. Please attach one on left or right.")
+    end
+end
+
+-- Main loop
+local function main()
+    init()
+    drawScreen()
+
+    while true do
+        parallel.waitForAny(
+            -- Input handler
+            function()
+                local _, keyCode = os.pullEvent("key")
+                if warning_active then
+                    if keyCode == keys.c then
+                        warning_active = false
+                        redstone.setOutput(redstone_output_side, false)
+                        drawScreen()
+                        broadcast("cancel")
+                    end
+                else
+                    warning_active = true
+                    alarm_start_time = os.time()
+                    redstone.setOutput(redstone_output_side, true)
+                    drawScreen()
+                    broadcast("start")
+                    playAlarm()
+                end
