@@ -2,7 +2,7 @@
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
-local protocol = "poggishtown_warning"
+local protocol = "poggimart_warning"
 local warning_active = false
 local modem_side = nil
 local speaker = peripheral.find("speaker")
@@ -35,9 +35,9 @@ end
 local function drawScreen()
     term.clear()
     term.setCursorPos(1, 1)
-    print("================================")
-    print("=  PoggishTown Warning System  =")
-    print("================================")
+    print("===============================")
+    print("= Two-Way Warning System      =")
+    print("===============================")
     term.setCursorPos(1, 5)
     if warning_active then
         term.setTextColor(colors.red)
@@ -124,3 +124,16 @@ local function main()
                     broadcast("start")
                     playAlarm()
                 end
+            end,
+            -- Network handler
+            function()
+                local _, _, _, _, msg, proto = os.pullEvent("rednet_message")
+                if proto == protocol then
+                    handleMessage(msg)
+                end
+            end
+        )
+    end
+end
+
+main()
