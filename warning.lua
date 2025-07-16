@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (PLEASEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE)
+-- Enhanced PoggishTown Warning System (asdasdasdasdasdasd)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -138,8 +138,6 @@ local terminal_features = {
     connection_strength = 0        -- Signal strength indicator
 }
 
--- Format time string
-
 -- Alarm patterns (different sounds for different alert types)
 local alarm_patterns = {
     general = {
@@ -268,13 +266,6 @@ local function getActiveNodeCount()
     return count
 end
 
--- Draw enhanced status UI with terminal-optimized layout
-local function drawScreen()
-    term.clear()
-    term.setCursorPos(1, 1)
-    term.setTextColor(colors.white)
-    term.setBackgroundColor(colors.black)
-    
 -- Draw enhanced status UI with terminal-optimized layout
 local function drawScreen()
     term.clear()
@@ -488,34 +479,6 @@ local function log(message)
     if file then
         file.write(entry)
         file.close()
-    end
-end
-
--- Play alarm with current pattern (non-blocking version)
-local function playAlarmStep()
-    if not warning_active then return end
-    
-    -- Skip audio on terminals unless they specifically have speakers
-    if is_terminal and not speaker then
-        return
-    end
-    
-    local pattern = alarm_patterns[current_alarm_type]
-    local volume = config.base_volume + (config.volume_increment * math.min(30, (os.time() - (alarm_start_time or 0))))
-    volume = math.min(config.max_volume, volume)
-    
-    for _, sound in ipairs(pattern) do
-        if not warning_active then break end
-        if speaker then
-            speaker.playNote("bass", volume, sound.note)
-        end
-        sleep(sound.duration)
-    end
-    
-    -- Check for auto-timeout
-    if alarm_start_time and (os.time() - alarm_start_time) > config.auto_stop_timeout then
-        log("Auto-stopping alarm due to timeout")
-        stopAlarm()
     end
 end
 
@@ -738,20 +701,6 @@ local function checkForUpdates(manual_mode)
         sleep(2)
     end
 end
-
-local function getActiveNodeCount()
-    local count = 0
-    local current_time = os.time()
-    for id, node in pairs(network_nodes) do
-        if (current_time - node.last_seen) <= config.max_offline_time then
-            count = count + 1
-        end
-    end
-    return count
-end
-
--- Rest of your existing functions (broadcast, sendHeartbeat, startAlarm, stopAlarm, etc.)
--- would go here unchanged...
 
 -- Broadcast over network with source ID and relay support
 local function broadcast(action, alarm_type, source_id)
@@ -1204,7 +1153,6 @@ local function main()
     local heartbeat_timer = os.startTimer(config.heartbeat_interval)
     local alarm_timer = nil
     local gps_timer = nil
-    local battery_timer = nil
     local update_check_timer = nil
     
     -- Terminal-specific timers
@@ -1238,7 +1186,7 @@ local function main()
                 checkForUpdates(true) -- true = manual mode
                 drawScreen()
             elseif keyCode == keys.n then
-                -- N key for changing name
+                -- N key for changing name (both computers and terminals)
                 changeName()
             elseif keyCode == keys.g and is_terminal then
                 -- G key for general alarm on terminals
@@ -1247,9 +1195,6 @@ local function main()
                 -- I key for terminal info
                 showTerminalInfo()
                 drawScreen() -- Redraw main screen after terminal info
-            elseif keyCode == keys.n then
-                -- N key for changing name (both computers and terminals)
-                changeName()
             elseif keyCode == keys.m and is_terminal then
                 -- M key to toggle silent mode
                 terminal_features.silent_mode = not terminal_features.silent_mode
@@ -1345,5 +1290,4 @@ local function main()
     end
 end
 
--- Start the main program
 main()
