@@ -169,46 +169,53 @@ local function drawStatusBar()
     -- Time
     local time_str = textutils.formatTime(os.time(), true)
     term.setCursorPos(2, 1)
-    write("⏰ " .. time_str)
+    write(time_str)
     
     -- Device name centered
     local name = getDisplayName()
-    if #name > 10 then name = name:sub(1, 7) .. "..." end
+    if #name > 12 then name = name:sub(1, 9) .. "..." end
     local w = term.getSize()
-    local center_pos = math.floor((w - #name - 2) / 2)
+    local center_pos = math.floor((w - #name) / 2)
     term.setCursorPos(center_pos, 1)
-    write("📱 " .. name)
+    write(name)
     
     -- Network indicator
     local nodes = getActiveNodeCount()
-    term.setCursorPos(w - 5, 1)
-    write("🌐 " .. nodes)
+    term.setCursorPos(w - 3, 1)
+    write("N:" .. nodes)
 end
 
 local function drawAppIcon(x, y, w, h, color, text_color, icon, label)
-    -- Draw icon background
+    -- Draw icon background with border
     term.setBackgroundColor(color)
     for i = 0, h - 1 do
         term.setCursorPos(x, y + i)
-        write(string.rep(" ", w))
+        if i == 0 or i == h - 1 then
+            -- Top and bottom borders
+            write("+" .. string.rep("-", w - 2) .. "+")
+        else
+            -- Side borders
+            write("|" .. string.rep(" ", w - 2) .. "|")
+        end
     end
     
     -- Draw icon
     term.setTextColor(text_color)
-    local icon_y = y + math.floor(h / 2) - 1
+    local icon_y = y + 1
     local icon_x = x + math.floor((w - #icon) / 2)
     term.setCursorPos(icon_x, icon_y)
     write(icon)
     
     -- Draw label
     if label then
-        local label_y = icon_y + 1
+        local label_y = y + 2
         local label_x = x + math.floor((w - #label) / 2)
         term.setCursorPos(label_x, label_y)
         write(label)
     end
     
     term.setBackgroundColor(colors.black)
+    term.setTextColor(colors.white)
 end
 
 local function isInBounds(click_x, click_y, x, y, w, h)
@@ -221,43 +228,53 @@ local function drawHomeScreen()
     term.clear()
     drawStatusBar()
     
-    -- Main title
+    -- Main title with decorative border
     term.setTextColor(colors.cyan)
     term.setCursorPos(2, 3)
-    write("🏘️ PoggishTown Security")
+    write("=======================")
+    term.setCursorPos(2, 4)
+    write("  PoggishTown Security")
+    term.setCursorPos(2, 5)
+    write("=======================")
     
     -- Status indicator
-    term.setCursorPos(2, 5)
+    term.setCursorPos(2, 7)
     if warning_active then
         term.setTextColor(colors.red)
-        write("🚨 ALERT ACTIVE - " .. string.upper(current_alarm_type))
+        write(">> ALERT ACTIVE <<")
+        term.setCursorPos(2, 8)
+        term.setTextColor(colors.yellow)
+        write("Type: " .. string.upper(current_alarm_type))
     else
         term.setTextColor(colors.green)
-        write("✅ System Ready")
+        write(">> System Ready <<")
+        term.setCursorPos(2, 8)
+        term.setTextColor(colors.white)
+        write("All systems normal")
     end
     
     -- App icons with better spacing
     local alarm_color = warning_active and colors.red or colors.orange
-    local alarm_icon = warning_active and "🚨" or "⚠️"
-    drawAppIcon(3, 8, 8, 4, alarm_color, colors.white, alarm_icon, "ALARM")
+    local alarm_icon = warning_active and "!!" or "/\\"
+    drawAppIcon(3, 11, 10, 4, alarm_color, colors.white, alarm_icon, "ALARM")
     
     local msg_color = unread_message_count > 0 and colors.lime or colors.blue
-    local msg_icon = unread_message_count > 0 and "📧" or "📨"
-    drawAppIcon(13, 8, 8, 4, msg_color, colors.white, msg_icon, "MSG")
+    local msg_icon = unread_message_count > 0 and "[" .. unread_message_count .. "]" or "MSG"
+    drawAppIcon(15, 11, 10, 4, msg_color, colors.white, msg_icon, "MESSAGES")
     
-    drawAppIcon(3, 14, 8, 4, colors.gray, colors.white, "⚙️", "SET")
+    drawAppIcon(3, 16, 10, 4, colors.gray, colors.white, "SET", "SETTINGS")
     
     -- Additional status info
     if terminal_features.silent_mode then
         term.setTextColor(colors.orange)
         term.setCursorPos(2, h - 1)
-        write("🔇 Silent Mode")
+        write("[SILENT MODE ACTIVE]")
     end
     
     -- Network status
     term.setTextColor(colors.white)
     term.setCursorPos(2, h - 2)
-    write("Network: " .. getActiveNodeCount() .. " nodes")
+    write("Network: " .. getActiveNodeCount() .. " nodes connected")
 end
 
 local function drawAlarmScreen()
@@ -268,31 +285,38 @@ local function drawAlarmScreen()
     -- Back button
     term.setTextColor(colors.cyan)
     term.setCursorPos(2, 3)
-    write("← Back")
+    write("< BACK")
     
-    -- Title
-    term.setTextColor(colors.white)
+    -- Title with decorative elements
+    term.setTextColor(colors.red)
     term.setCursorPos(2, 5)
-    write("🚨 Emergency Alert")
+    write("!!! EMERGENCY ALERT !!!")
     
     if warning_active then
         term.setTextColor(colors.red)
         term.setCursorPos(2, 7)
-        write("⚠️ ALARM ACTIVE: " .. string.upper(current_alarm_type))
+        write(">> ALARM ACTIVE <<")
+        term.setTextColor(colors.yellow)
+        term.setCursorPos(2, 8)
+        write("Type: " .. string.upper(current_alarm_type))
         
         -- Time since alarm started
         if alarm_start_time then
             local elapsed = os.time() - alarm_start_time
-            term.setCursorPos(2, 8)
-            write("⏱️ Active for: " .. math.floor(elapsed) .. "s")
+            term.setCursorPos(2, 9)
+            write("Active for: " .. math.floor(elapsed) .. " seconds")
         end
         
         -- Cancel button
-        drawAppIcon(3, 11, 12, 4, colors.red, colors.white, "❌", "CANCEL")
+        drawAppIcon(3, 12, 15, 4, colors.red, colors.white, "CANCEL", "STOP ALARM")
     else
+        term.setTextColor(colors.white)
+        term.setCursorPos(2, 7)
+        write("Select alarm type:")
+        
         -- Alarm type buttons
-        drawAppIcon(3, 9, 12, 4, colors.orange, colors.white, "⚠️", "GENERAL")
-        drawAppIcon(3, 15, 12, 4, colors.red, colors.white, "🚨", "EVACUATION")
+        drawAppIcon(3, 10, 15, 4, colors.orange, colors.black, "/\\", "GENERAL ALERT")
+        drawAppIcon(3, 15, 15, 4, colors.red, colors.white, "!!", "EVACUATION")
     end
 end
 
@@ -304,23 +328,23 @@ local function drawMessagesScreen()
     -- Back button
     term.setTextColor(colors.cyan)
     term.setCursorPos(2, 3)
-    write("← Back")
+    write("< BACK")
     
     -- Title
     term.setTextColor(colors.white)
     term.setCursorPos(2, 5)
-    write("📨 Messages")
+    write("=== MESSAGES ===")
     
     if #recent_messages == 0 then
         term.setTextColor(colors.gray)
         term.setCursorPos(2, 8)
-        write("📭 No messages")
+        write("[ No messages ]")
     else
         local y = 7
         for i = math.max(1, #recent_messages - 4), #recent_messages do
             local msg = recent_messages[i]
             local bg_color = msg.direction == "sent" and colors.blue or colors.gray
-            local icon = msg.direction == "sent" and "📤" or "📥"
+            local icon = msg.direction == "sent" and ">" or "<"
             
             term.setBackgroundColor(bg_color)
             term.setTextColor(colors.white)
@@ -343,52 +367,57 @@ local function drawSettingsScreen()
     -- Back button
     term.setTextColor(colors.cyan)
     term.setCursorPos(2, 3)
-    write("← Back")
+    write("< BACK")
     
     -- Title
     term.setTextColor(colors.white)
     term.setCursorPos(2, 5)
-    write("⚙️ Settings")
+    write("=== SETTINGS ===")
     
     -- Silent Mode toggle
     term.setCursorPos(2, 8)
-    write("🔇 Silent Mode")
+    write("Silent Mode:")
     local w = term.getSize()
-    term.setCursorPos(w - 6, 8)
+    term.setCursorPos(w - 8, 8)
     if terminal_features.silent_mode then
         term.setTextColor(colors.green)
-        write("✅ ON")
+        write("[ ON ]")
     else
         term.setTextColor(colors.red)
-        write("❌ OFF")
+        write("[ OFF ]")
     end
     
     -- Device Name
     term.setTextColor(colors.white)
     term.setCursorPos(2, 10)
-    write("📱 Device Name")
+    write("Device Name:")
     term.setTextColor(colors.cyan)
     term.setCursorPos(w - 8, 10)
-    write("Edit →")
+    write("[ EDIT ]")
     
-    -- Device info
+    -- Device info box
     term.setTextColor(colors.gray)
-    term.setCursorPos(2, 12)
-    write("ID: " .. computer_id)
     term.setCursorPos(2, 13)
-    write("Type: " .. (is_terminal and "Terminal" or "Computer"))
+    write("+-----------------+")
+    term.setCursorPos(2, 14)
+    write("| ID: " .. string.format("%-11s", computer_id) .. "|")
+    term.setCursorPos(2, 15)
+    local device_type = is_terminal and "Terminal" or "Computer"
+    write("| Type: " .. string.format("%-9s", device_type) .. "|")
+    term.setCursorPos(2, 16)
+    write("+-----------------+")
 end
 
 local function handleTouch(x, y)
     if gui_state.current_screen == "home" then
-        if isInBounds(x, y, 3, 8, 8, 4) then
+        if isInBounds(x, y, 3, 11, 10, 4) then
             gui_state.current_screen = "alarm_trigger"
             return true
-        elseif isInBounds(x, y, 13, 8, 8, 4) then
+        elseif isInBounds(x, y, 15, 11, 10, 4) then
             gui_state.current_screen = "messages"
             unread_message_count = 0
             return true
-        elseif isInBounds(x, y, 3, 14, 8, 4) then
+        elseif isInBounds(x, y, 3, 16, 10, 4) then
             gui_state.current_screen = "settings"
             return true
         end
@@ -396,16 +425,16 @@ local function handleTouch(x, y)
         if isInBounds(x, y, 2, 3, 6, 1) then
             gui_state.current_screen = "home"
             return true
-        elseif warning_active and isInBounds(x, y, 3, 11, 12, 4) then
+        elseif warning_active and isInBounds(x, y, 3, 12, 15, 4) then
             stopAlarm()
             gui_state.current_screen = "home"
             return true
         elseif not warning_active then
-            if isInBounds(x, y, 3, 9, 12, 4) then
+            if isInBounds(x, y, 3, 10, 15, 4) then
                 startAlarm("general")
                 gui_state.current_screen = "home"
                 return true
-            elseif isInBounds(x, y, 3, 15, 12, 4) then
+            elseif isInBounds(x, y, 3, 15, 15, 4) then
                 startAlarm("evacuation")
                 gui_state.current_screen = "home"
                 return true
