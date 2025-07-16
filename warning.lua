@@ -1,5 +1,5 @@
 -- Enhanced PoggishTown Warning System with Terminal GUI
--- Clean version to fix all syntax errors
+-- Fixed version with better visuals and proper function order
 
 local protocol = "poggishtown_warning"
 local warning_active = false
@@ -55,7 +55,7 @@ local function getDisplayName()
     if config.custom_name then return config.custom_name end
     local label = os.getComputerLabel()
     if label then return label end
-    return tostring(computer_id)
+    return "Node-" .. computer_id
 end
 
 local function setCustomName(name)
@@ -101,34 +101,113 @@ local function generateMessageId()
     return computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999)
 end
 
--- Terminal GUI functions
+-- Network functions (moved before GUI functions that use them)
+local function broadcast(action, alarm_type)
+    local message = {
+        type = "warning",
+        action = action,
+        alarm_type = alarm_type or current_alarm_type,
+        source_id = computer_id,
+        timestamp = os.time(),
+        message_id = generateMessageId(),
+        device_type = is_terminal and "terminal" or "computer"
+    }
+    rednet.broadcast(message, protocol)
+end
+
+local function sendHeartbeat()
+    local message = {
+        type = "heartbeat",
+        computer_id = computer_id,
+        timestamp = os.time(),
+        message_id = generateMessageId(),
+        device_type = is_terminal and "terminal" or "computer",
+        display_name = getDisplayName(),
+        alarm_active = warning_active,
+        alarm_type = current_alarm_type,
+        alarm_triggered_by = alarm_triggered_by
+    }
+    rednet.broadcast(message, protocol)
+end
+
+local function startAlarm(alarm_type)
+    alarm_type = alarm_type or "general"
+    if not warning_active then
+        warning_active = true
+        current_alarm_type = alarm_type
+        alarm_start_time = os.time()
+        alarm_triggered_by = computer_id
+        
+        if not is_terminal then
+            redstone.setOutput(redstone_output_side, true)
+        end
+        
+        broadcast("start", alarm_type)
+    end
+end
+
+local function stopAlarm()
+    if warning_active then
+        warning_active = false
+        
+        if not is_terminal then
+            redstone.setOutput(redstone_output_side, false)
+        end
+        
+        broadcast("stop", current_alarm_type)
+        alarm_triggered_by = nil
+    end
+end
+
+-- Terminal GUI functions with enhanced visuals
 local function drawStatusBar()
-    term.setBackgroundColor(colors.black)
+    term.setBackgroundColor(colors.gray)
     term.setTextColor(colors.white)
     term.setCursorPos(1, 1)
     term.clearLine()
+    
+    -- Time
     local time_str = textutils.formatTime(os.time(), true)
     term.setCursorPos(2, 1)
-    write(time_str)
+    write("⏰ " .. time_str)
+    
+    -- Device name centered
     local name = getDisplayName()
-    if #name > 8 then name = name:sub(1, 8) end
+    if #name > 10 then name = name:sub(1, 7) .. "..." end
     local w = term.getSize()
-    local center_pos = math.floor((w - #name) / 2)
+    local center_pos = math.floor((w - #name - 2) / 2)
     term.setCursorPos(center_pos, 1)
-    write(name)
+    write("📱 " .. name)
+    
+    -- Network indicator
+    local nodes = getActiveNodeCount()
+    term.setCursorPos(w - 5, 1)
+    write("🌐 " .. nodes)
 end
 
-local function drawAppIcon(x, y, w, h, color, text_color, icon)
+local function drawAppIcon(x, y, w, h, color, text_color, icon, label)
+    -- Draw icon background
     term.setBackgroundColor(color)
     for i = 0, h - 1 do
         term.setCursorPos(x, y + i)
         write(string.rep(" ", w))
     end
+    
+    -- Draw icon
     term.setTextColor(text_color)
-    local icon_y = y + 1
-    local icon_x = x + 1
+    local icon_y = y + math.floor(h / 2) - 1
+    local icon_x = x + math.floor((w - #icon) / 2)
     term.setCursorPos(icon_x, icon_y)
     write(icon)
+    
+    -- Draw label
+    if label then
+        local label_y = icon_y + 1
+        local label_x = x + math.floor((w - #label) / 2)
+        term.setCursorPos(label_x, label_y)
+        write(label)
+    end
+    
     term.setBackgroundColor(colors.black)
 end
 
@@ -142,33 +221,43 @@ local function drawHomeScreen()
     term.clear()
     drawStatusBar()
     
-    term.setTextColor(colors.white)
+    -- Main title
+    term.setTextColor(colors.cyan)
     term.setCursorPos(2, 3)
-    write("PoggishTown Security")
+    write("🏘️ PoggishTown Security")
     
+    -- Status indicator
     term.setCursorPos(2, 5)
     if warning_active then
         term.setTextColor(colors.red)
-        write("ALERT ACTIVE")
+        write("🚨 ALERT ACTIVE - " .. string.upper(current_alarm_type))
     else
         term.setTextColor(colors.green)
-        write("System Ready")
+        write("✅ System Ready")
     end
     
-    -- App icons
+    -- App icons with better spacing
     local alarm_color = warning_active and colors.red or colors.orange
-    drawAppIcon(3, 8, 6, 3, alarm_color, colors.white, "ALARM")
+    local alarm_icon = warning_active and "🚨" or "⚠️"
+    drawAppIcon(3, 8, 8, 4, alarm_color, colors.white, alarm_icon, "ALARM")
     
     local msg_color = unread_message_count > 0 and colors.lime or colors.blue
-    drawAppIcon(11, 8, 6, 3, msg_color, colors.white, "MSG")
+    local msg_icon = unread_message_count > 0 and "📧" or "📨"
+    drawAppIcon(13, 8, 8, 4, msg_color, colors.white, msg_icon, "MSG")
     
-    drawAppIcon(19, 8, 6, 3, colors.gray, colors.white, "SET")
+    drawAppIcon(3, 14, 8, 4, colors.gray, colors.white, "⚙️", "SET")
     
+    -- Additional status info
     if terminal_features.silent_mode then
         term.setTextColor(colors.orange)
         term.setCursorPos(2, h - 1)
-        write("Silent Mode")
+        write("🔇 Silent Mode")
     end
+    
+    -- Network status
+    term.setTextColor(colors.white)
+    term.setCursorPos(2, h - 2)
+    write("Network: " .. getActiveNodeCount() .. " nodes")
 end
 
 local function drawAlarmScreen()
@@ -176,22 +265,34 @@ local function drawAlarmScreen()
     term.clear()
     drawStatusBar()
     
-    term.setTextColor(colors.blue)
+    -- Back button
+    term.setTextColor(colors.cyan)
     term.setCursorPos(2, 3)
-    write("< Back")
+    write("← Back")
     
+    -- Title
     term.setTextColor(colors.white)
     term.setCursorPos(2, 5)
-    write("Emergency Alert")
+    write("🚨 Emergency Alert")
     
     if warning_active then
         term.setTextColor(colors.red)
         term.setCursorPos(2, 7)
-        write("ALARM ACTIVE")
-        drawAppIcon(3, 10, 10, 3, colors.red, colors.white, "CANCEL")
+        write("⚠️ ALARM ACTIVE: " .. string.upper(current_alarm_type))
+        
+        -- Time since alarm started
+        if alarm_start_time then
+            local elapsed = os.time() - alarm_start_time
+            term.setCursorPos(2, 8)
+            write("⏱️ Active for: " .. math.floor(elapsed) .. "s")
+        end
+        
+        -- Cancel button
+        drawAppIcon(3, 11, 12, 4, colors.red, colors.white, "❌", "CANCEL")
     else
-        drawAppIcon(3, 9, 10, 3, colors.orange, colors.white, "GENERAL")
-        drawAppIcon(3, 13, 10, 3, colors.red, colors.white, "EVACUATION")
+        -- Alarm type buttons
+        drawAppIcon(3, 9, 12, 4, colors.orange, colors.white, "⚠️", "GENERAL")
+        drawAppIcon(3, 15, 12, 4, colors.red, colors.white, "🚨", "EVACUATION")
     end
 end
 
@@ -200,28 +301,34 @@ local function drawMessagesScreen()
     term.clear()
     drawStatusBar()
     
-    term.setTextColor(colors.blue)
+    -- Back button
+    term.setTextColor(colors.cyan)
     term.setCursorPos(2, 3)
-    write("< Back")
+    write("← Back")
     
+    -- Title
     term.setTextColor(colors.white)
     term.setCursorPos(2, 5)
-    write("Messages")
+    write("📨 Messages")
     
     if #recent_messages == 0 then
         term.setTextColor(colors.gray)
         term.setCursorPos(2, 8)
-        write("No messages")
+        write("📭 No messages")
     else
         local y = 7
-        for i = math.max(1, #recent_messages - 3), #recent_messages do
+        for i = math.max(1, #recent_messages - 4), #recent_messages do
             local msg = recent_messages[i]
             local bg_color = msg.direction == "sent" and colors.blue or colors.gray
+            local icon = msg.direction == "sent" and "📤" or "📥"
+            
             term.setBackgroundColor(bg_color)
             term.setTextColor(colors.white)
             term.setCursorPos(2, y)
             local sender = msg.direction == "sent" and "You" or msg.from_name
-            write(" " .. sender .. ": " .. msg.message .. " ")
+            local display = icon .. " " .. sender .. ": " .. msg.message
+            if #display > 24 then display = display:sub(1, 21) .. "..." end
+            write(" " .. display .. " ")
             term.setBackgroundColor(colors.black)
             y = y + 2
         end
@@ -233,44 +340,55 @@ local function drawSettingsScreen()
     term.clear()
     drawStatusBar()
     
-    term.setTextColor(colors.blue)
+    -- Back button
+    term.setTextColor(colors.cyan)
     term.setCursorPos(2, 3)
-    write("< Back")
+    write("← Back")
     
+    -- Title
     term.setTextColor(colors.white)
     term.setCursorPos(2, 5)
-    write("Settings")
+    write("⚙️ Settings")
     
-    term.setCursorPos(2, 7)
-    write("Silent Mode")
+    -- Silent Mode toggle
+    term.setCursorPos(2, 8)
+    write("🔇 Silent Mode")
     local w = term.getSize()
-    term.setCursorPos(w - 4, 7)
+    term.setCursorPos(w - 6, 8)
     if terminal_features.silent_mode then
         term.setTextColor(colors.green)
-        write("ON")
+        write("✅ ON")
     else
         term.setTextColor(colors.red)
-        write("OFF")
+        write("❌ OFF")
     end
     
+    -- Device Name
     term.setTextColor(colors.white)
-    term.setCursorPos(2, 9)
-    write("Device Name")
-    term.setTextColor(colors.blue)
-    term.setCursorPos(w - 6, 9)
-    write("Edit >")
+    term.setCursorPos(2, 10)
+    write("📱 Device Name")
+    term.setTextColor(colors.cyan)
+    term.setCursorPos(w - 8, 10)
+    write("Edit →")
+    
+    -- Device info
+    term.setTextColor(colors.gray)
+    term.setCursorPos(2, 12)
+    write("ID: " .. computer_id)
+    term.setCursorPos(2, 13)
+    write("Type: " .. (is_terminal and "Terminal" or "Computer"))
 end
 
 local function handleTouch(x, y)
     if gui_state.current_screen == "home" then
-        if isInBounds(x, y, 3, 8, 6, 3) then
+        if isInBounds(x, y, 3, 8, 8, 4) then
             gui_state.current_screen = "alarm_trigger"
             return true
-        elseif isInBounds(x, y, 11, 8, 6, 3) then
+        elseif isInBounds(x, y, 13, 8, 8, 4) then
             gui_state.current_screen = "messages"
             unread_message_count = 0
             return true
-        elseif isInBounds(x, y, 19, 8, 6, 3) then
+        elseif isInBounds(x, y, 3, 14, 8, 4) then
             gui_state.current_screen = "settings"
             return true
         end
@@ -278,16 +396,16 @@ local function handleTouch(x, y)
         if isInBounds(x, y, 2, 3, 6, 1) then
             gui_state.current_screen = "home"
             return true
-        elseif warning_active and isInBounds(x, y, 3, 10, 10, 3) then
+        elseif warning_active and isInBounds(x, y, 3, 11, 12, 4) then
             stopAlarm()
             gui_state.current_screen = "home"
             return true
         elseif not warning_active then
-            if isInBounds(x, y, 3, 9, 10, 3) then
+            if isInBounds(x, y, 3, 9, 12, 4) then
                 startAlarm("general")
                 gui_state.current_screen = "home"
                 return true
-            elseif isInBounds(x, y, 3, 13, 10, 3) then
+            elseif isInBounds(x, y, 3, 15, 12, 4) then
                 startAlarm("evacuation")
                 gui_state.current_screen = "home"
                 return true
@@ -302,10 +420,10 @@ local function handleTouch(x, y)
         if isInBounds(x, y, 2, 3, 6, 1) then
             gui_state.current_screen = "home"
             return true
-        elseif y == 7 then
+        elseif y == 8 then
             terminal_features.silent_mode = not terminal_features.silent_mode
             return true
-        elseif y == 9 then
+        elseif y == 10 then
             changeName()
             return true
         end
@@ -360,66 +478,6 @@ local function drawScreen()
         print("E - Evacuation alarm")
         print("C - Cancel alarm")
         print("S - Status | N - Change Name")
-    end
-end
-
--- Network functions
-local function broadcast(action, alarm_type)
-    local message = {
-        type = "warning",
-        action = action,
-        alarm_type = alarm_type or current_alarm_type,
-        source_id = computer_id,
-        timestamp = os.time(),
-        message_id = generateMessageId(),
-        device_type = is_terminal and "terminal" or "computer"
-    }
-    rednet.broadcast(message, protocol)
-end
-
-local function sendHeartbeat()
-    local message = {
-        type = "heartbeat",
-        computer_id = computer_id,
-        timestamp = os.time(),
-        message_id = generateMessageId(),
-        device_type = is_terminal and "terminal" or "computer",
-        display_name = getDisplayName(),
-        alarm_active = warning_active,
-        alarm_type = current_alarm_type,
-        alarm_triggered_by = alarm_triggered_by
-    }
-    rednet.broadcast(message, protocol)
-end
-
-local function startAlarm(alarm_type)
-    alarm_type = alarm_type or "general"
-    if not warning_active then
-        warning_active = true
-        current_alarm_type = alarm_type
-        alarm_start_time = os.time()
-        alarm_triggered_by = computer_id
-        
-        if not is_terminal then
-            redstone.setOutput(redstone_output_side, true)
-        end
-        
-        drawScreen()
-        broadcast("start", alarm_type)
-    end
-end
-
-local function stopAlarm()
-    if warning_active then
-        warning_active = false
-        
-        if not is_terminal then
-            redstone.setOutput(redstone_output_side, false)
-        end
-        
-        drawScreen()
-        broadcast("stop", current_alarm_type)
-        alarm_triggered_by = nil
     end
 end
 
@@ -554,8 +612,10 @@ local function main()
             
             if keyCode == keys.c then
                 stopAlarm()
+                drawScreen()
             elseif keyCode == keys.e then
                 startAlarm("evacuation")
+                drawScreen()
             elseif keyCode == keys.s then
                 showStatus()
             elseif keyCode == keys.n then
@@ -565,6 +625,7 @@ local function main()
                 break
             elseif not warning_active and not is_terminal then
                 startAlarm("general")
+                drawScreen()
             end
             
         elseif event == "mouse_click" then
