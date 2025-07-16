@@ -21,6 +21,8 @@ local function playAlarm()
             speaker.playNote("bass", volume, 9)
             sleep(0.4)
             volume = math.min(2.0, volume + 0.05) -- Increase volume gradually
+        else
+            sleep(0.8) -- Still need to sleep even without speaker
         end
     end
 end
@@ -63,6 +65,27 @@ local function broadcast(action)
     rednet.broadcast({ type = "warning", action = action }, protocol)
 end
 
+-- Start the alarm (local and broadcast)
+local function startAlarm()
+    if not warning_active then
+        warning_active = true
+        alarm_start_time = os.time()
+        redstone.setOutput(redstone_output_side, true)
+        drawScreen()
+        broadcast("start")
+    end
+end
+
+-- Stop the alarm (local and broadcast)
+local function stopAlarm()
+    if warning_active then
+        warning_active = false
+        redstone.setOutput(redstone_output_side, false)
+        drawScreen()
+        broadcast("stop")
+    end
+end
+
 -- Handle network message
 local function handleMessage(msg)
     if msg.type == "warning" then
@@ -71,8 +94,7 @@ local function handleMessage(msg)
             alarm_start_time = os.time()
             redstone.setOutput(redstone_output_side, true)
             drawScreen()
-            parallel.waitForAny(playAlarm)
-        elseif msg.action == "cancel" and warning_active then
+        elseif msg.action == "stop" and warning_active then
             warning_active = false
             redstone.setOutput(redstone_output_side, false)
             drawScreen()
@@ -95,7 +117,41 @@ local function init()
         error("No modem found. Please attach one on left or right.")
     end
     if not speaker then
-        error("No speaker found. Please attach one on left or right.")
+        print("Warning: No speaker found. Audio will not play.")
+    end
+end
+
+-- Input handler function
+local function handleInput()
+    while true do
+        local _, keyCode = os.pullEvent("key")
+        if keyCode == keys.c then
+            stopAlarm()
+        elseif not warning_active then
+            -- Any other key starts the alarm (but only if not already active)
+            startAlarm()
+        end
+    end
+end
+
+-- Network handler function
+local function handleNetwork()
+    while true do
+        local _, _, _, _, msg, proto = os.pullEvent("rednet_message")
+        if proto == protocol then
+            handleMessage(msg)
+        end
+    end
+end
+
+-- Alarm sound handler function
+local function handleAlarm()
+    while true do
+        if warning_active then
+            playAlarm()
+        else
+            sleep(0.1) -- Small sleep when not active
+        end
     end
 end
 
@@ -104,36 +160,12 @@ local function main()
     init()
     drawScreen()
 
-    while true do
-        parallel.waitForAny(
-            -- Input handler
-            function()
-                local _, keyCode = os.pullEvent("key")
-                if warning_active then
-                    if keyCode == keys.c then
-                        warning_active = false
-                        redstone.setOutput(redstone_output_side, false)
-                        drawScreen()
-                        broadcast("cancel")
-                    end
-                else
-                    warning_active = true
-                    alarm_start_time = os.time()
-                    redstone.setOutput(redstone_output_side, true)
-                    drawScreen()
-                    broadcast("start")
-                    playAlarm()
-                end
-            end,
-            -- Network handler
-            function()
-                local _, _, _, _, msg, proto = os.pullEvent("rednet_message")
-                if proto == protocol then
-                    handleMessage(msg)
-                end
-            end
-        )
-    end
+    -- Run all three handlers in parallel
+    parallel.waitForAll(
+        handleInput,
+        handleNetwork,
+        handleAlarm
+    )
 end
 
 main()
