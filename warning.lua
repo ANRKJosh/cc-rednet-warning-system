@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (we fix now, cope?)
+-- Enhanced PoggishTown Warning System (atleast the actual computers still work eh?)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -99,6 +99,104 @@ local alarm_patterns = {
 }
 
 local current_alarm_type = "general"
+
+-- Terminal GPS tracking
+local function updateGPS()
+    if is_terminal and terminal_features and terminal_features.location_tracking and gps then
+        local x, y, z = gps.locate(2) -- 2 second timeout
+        if x and y and z then
+            terminal_features.last_gps_coords = {x = math.floor(x), y = math.floor(y), z = math.floor(z)}
+            return terminal_features.last_gps_coords
+        end
+    end
+    return terminal_features and terminal_features.last_gps_coords or nil
+end
+
+-- Terminal "vibrate" effect (screen flash)
+local function terminalVibrate()
+    if not is_terminal or not terminal_features or not terminal_features.vibrate_alerts then return end
+    
+    local original_bg = term.getBackgroundColor()
+    for i = 1, 3 do
+        term.setBackgroundColor(colors.white)
+        term.clear()
+        sleep(0.1)
+        term.setBackgroundColor(original_bg)
+        term.clear()
+        sleep(0.1)
+    end
+end
+
+-- Terminal compact logging (keeps last 20 entries in memory)
+local function terminalLog(message)
+    if not is_terminal or not terminal_features then return end
+    
+    local timestamp = textutils.formatTime(os.time(), true)
+    local entry = "[" .. timestamp .. "] " .. message
+    
+    table.insert(terminal_features.compact_log, entry)
+    
+    -- Keep only last 20 entries
+    while #terminal_features.compact_log > 20 do
+        table.remove(terminal_features.compact_log, 1)
+    end
+end
+
+-- Show terminal-specific status
+local function showTerminalInfo()
+    if not is_terminal then return end
+    
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== Terminal Info ===")
+    
+    -- GPS coordinates
+    local coords = updateGPS()
+    if coords then
+        print("Location: " .. coords.x .. ", " .. coords.y .. ", " .. coords.z)
+    else
+        print("Location: GPS unavailable")
+    end
+    
+    -- Connection info
+    if terminal_features then
+        print("Signal: " .. terminal_features.connection_strength .. "/5")
+        print("Silent Mode: " .. (terminal_features.silent_mode and "ON" or "OFF"))
+        print("Vibrate: " .. (terminal_features.vibrate_alerts and "ON" or "OFF"))
+    end
+    print("Audio: " .. (speaker and "Available" or "Not Available"))
+    
+    -- Device info
+    print("Device Type: Wireless Terminal")
+    print("Computer ID: " .. computer_id)
+    
+    -- Compact log
+    if terminal_features and terminal_features.compact_log then
+        print("\n=== Recent Activity ===")
+        local start = math.max(1, #terminal_features.compact_log - 8)
+        for i = start, #terminal_features.compact_log do
+            print(terminal_features.compact_log[i])
+        end
+    end
+    
+    print("\nPress any key to return...")
+    os.pullEvent("key")
+    drawScreen()
+end
+
+-- Terminal notification with vibration
+local function terminalNotify(message, urgent)
+    if not is_terminal or not terminal_features then return end
+    
+    if urgent and not terminal_features.silent_mode then
+        terminalVibrate()
+    end
+    
+    terminalLog(message)
+    
+    -- Update connection strength based on network activity
+    terminal_features.connection_strength = math.min(5, terminal_features.connection_strength + 1)
+end
 
 -- Logging system with rotation
 local log_file = "warning_system.log"
