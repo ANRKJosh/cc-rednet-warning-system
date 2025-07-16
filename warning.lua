@@ -371,19 +371,29 @@ end
 
 -- Handle network message with relay support
 local function handleMessage(msg)
-    -- Skip our own messages
-    if msg.origin_id == computer_id then return end
-    
-    -- Skip duplicate messages
-    if msg.message_id and isMessageSeen(msg.message_id) then return end
-    
-    -- Mark as seen and relay if appropriate
-    if msg.message_id then
-        markMessageSeen(msg.message_id)
+    -- Handle test messages first - always respond
+    if msg.type == "test" and msg.from ~= computer_id then
+        local response = {
+            type = "test",
+            from = computer_id,
+            message = "Response from " .. computer_id,
+            timestamp = os.time()
+        }
+        rednet.broadcast(response, protocol)
+        return
     end
     
-    -- Relay message to extend range
-    relayMessage(msg)
+    -- For relay messages, skip our own messages
+    if msg.origin_id and msg.origin_id == computer_id then return end
+    
+    -- Skip duplicate messages (only for messages that have message_id)
+    if msg.message_id and isMessageSeen(msg.message_id) then return end
+    
+    -- Mark as seen and relay if appropriate (only for relay-enabled messages)
+    if msg.message_id then
+        markMessageSeen(msg.message_id)
+        relayMessage(msg)
+    end
     
     if msg.type == "warning" then
         if msg.action == "start" and not warning_active then
@@ -407,7 +417,7 @@ local function handleMessage(msg)
             computer_id = msg.computer_id,
             hops = msg.hops or 0
         }
-        -- Only update screen if we're on the main screen, not status/logs
+        -- Only update screen if we're on the main screen
         if term.getCursorPos() == 1 then
             drawScreen()
         end
