@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System with iPhone-style Terminal GUI (v2)
+-- Enhanced PoggishTown Warning System with iPhone-style Terminal GUI (v2.5)
 -- Computers: Traditional keyboard interface
 -- Terminals: Touch-friendly GUI interface
 
