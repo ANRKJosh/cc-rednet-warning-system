@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (asdasdasdasdasdasd)
+-- Enhanced PoggishTown Warning System (message system)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -127,6 +127,8 @@ local is_terminal = isWirelessTerminal()
 local update_available = false  -- Track if update is available
 local last_update_check = 0     -- Last time we checked for updates
 local background_update_running = false  -- Prevent multiple simultaneous checks
+local recent_messages = {}      -- Recent direct messages for all devices
+local unread_message_count = 0  -- Count of unread messages
 
 -- Terminal-specific features (always defined, even for computers)
 local terminal_features = {
@@ -135,7 +137,8 @@ local terminal_features = {
     vibrate_alerts = true,         -- Use screen flashing as "vibration"
     compact_log = {},              -- In-memory compact log for terminals
     last_gps_coords = nil,         -- Last known coordinates
-    connection_strength = 0        -- Signal strength indicator
+    connection_strength = 0,       -- Signal strength indicator
+    recent_messages = {}           -- Recent direct messages
 }
 
 -- Alarm patterns (different sounds for different alert types)
@@ -337,14 +340,22 @@ local function drawScreen()
         print("G - General | E - Evacuation")
         print("C - Cancel  | S - Status")
         print("U - Update  | I - Terminal Info")
-        print("N - Change Name | M - Silent Mode")
-        print("Q - Quit")
+        print("N - Change Name | M - Messages")
+        print("X - Silent Mode | Q - Quit")
         
         -- Show update indicator for terminals
         if update_available then
             print("")
             term.setTextColor(colors.yellow)
             print("UPDATE READY! Press U")
+            term.setTextColor(colors.white)
+        end
+        
+        -- Show unread message indicator
+        if unread_message_count > 0 then
+            print("")
+            term.setTextColor(colors.green)
+            print("NEW MESSAGES (" .. unread_message_count .. ") - Press M")
             term.setTextColor(colors.white)
         end
         
@@ -428,13 +439,21 @@ local function drawScreen()
         print("E - Evacuation alarm")
         print("C - Cancel alarm")
         print("S - Status | L - Logs | T - Test")
-        print("U - Update | N - Change Name")
+        print("U - Update | N - Change Name | M - Messages")
         
         -- Show update indicator
         if update_available then
             print("")
             term.setTextColor(colors.yellow)
             print("UPDATE AVAILABLE! Press U to install")
+            term.setTextColor(colors.white)
+        end
+        
+        -- Show unread message indicator
+        if unread_message_count > 0 then
+            print("")
+            term.setTextColor(colors.green)
+            print("NEW MESSAGES (" .. unread_message_count .. ") - Press M")
             term.setTextColor(colors.white)
         end
     end
@@ -823,7 +842,122 @@ local function showStatus()
     drawScreen()
 end
 
--- Change device name
+-- Send direct message to specific device
+local function sendDirectMessage(target_id, message_text)
+    local message = {
+        type = "direct_message",
+        target_id = target_id,
+        sender_id = computer_id,
+        sender_name = getDisplayName(),
+        message_text = message_text,
+        timestamp = os.time(),
+        message_id = generateMessageId()
+    }
+    
+    rednet.broadcast(message, protocol)
+    markMessageSeen(message.message_id)
+    log("Direct message sent to " .. target_id .. ": " .. message_text)
+    
+    -- Add to our own message history as "sent"
+    table.insert(recent_messages, {
+        from_id = computer_id,
+        from_name = getDisplayName(),
+        to_id = target_id,
+        message = message_text,
+        timestamp = os.time(),
+        direction = "sent"
+    })
+    
+    -- Keep only last 10 messages
+    while #recent_messages > 10 do
+        table.remove(recent_messages, 1)
+    end
+end
+
+-- Show messaging interface
+local function showMessaging()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== Messaging System ===")
+    print("Device: " .. getDisplayName() .. " (ID: " .. computer_id .. ")")
+    print("")
+    
+    -- Show recent messages
+    if #recent_messages > 0 then
+        print("Recent Messages:")
+        print("================")
+        for i = math.max(1, #recent_messages - 7), #recent_messages do
+            local msg = recent_messages[i]
+            local time_str = textutils.formatTime(msg.timestamp, true)
+            local direction = msg.direction == "sent" and "→" or "←"
+            local other_name = msg.direction == "sent" and 
+                (network_nodes[msg.to_id] and network_nodes[msg.to_id].display_name or ("ID:" .. msg.to_id)) or
+                msg.from_name
+            
+            term.setTextColor(msg.direction == "sent" and colors.cyan or colors.yellow)
+            print(time_str .. " " .. direction .. " " .. other_name)
+            term.setTextColor(colors.white)
+            print("  " .. msg.message)
+            print("")
+        end
+    else
+        print("No recent messages.")
+        print("")
+    end
+    
+    -- Show available contacts
+    print("Online Devices:")
+    print("===============")
+    local current_time = os.time()
+    local online_devices = {}
+    
+    for id, node in pairs(network_nodes) do
+        if (current_time - node.last_seen) <= config.max_offline_time then
+            table.insert(online_devices, {id = id, name = node.display_name or ("ID:" .. id)})
+        end
+    end
+    
+    if #online_devices > 0 then
+        for i, device in ipairs(online_devices) do
+            print(i .. ". " .. device.name .. " (ID: " .. device.id .. ")")
+        end
+        print("")
+        print("Enter device number to message, or 'q' to return:")
+        
+        local input = read()
+        
+        if input:lower() == "q" then
+            drawScreen()
+            return
+        end
+        
+        local device_num = tonumber(input)
+        if device_num and device_num >= 1 and device_num <= #online_devices then
+            local target = online_devices[device_num]
+            print("")
+            print("Messaging " .. target.name .. ":")
+            print("Enter message (or press Enter to cancel):")
+            
+            local message_text = read()
+            if message_text and message_text ~= "" then
+                sendDirectMessage(target.id, message_text)
+                print("")
+                print("Message sent to " .. target.name .. "!")
+                sleep(1)
+            end
+        else
+            print("Invalid selection.")
+            sleep(1)
+        end
+    else
+        print("No devices online.")
+        print("")
+        print("Press any key to return...")
+        os.pullEvent("key")
+    end
+    
+    drawScreen()
+end
 local function changeName()
     term.clear()
     term.setCursorPos(1, 1)
@@ -1008,6 +1142,36 @@ local function handleMessage(msg)
             log("Alarm stopped remotely by computer " .. msg.source_id)
             alarm_triggered_by = nil
         end
+    elseif msg.type == "direct_message" then
+        -- Handle direct messages
+        if msg.target_id == computer_id then
+            log("Received direct message from " .. msg.sender_name .. ": " .. msg.message_text)
+            
+            -- Add to message history
+            table.insert(recent_messages, {
+                from_id = msg.sender_id,
+                from_name = msg.sender_name,
+                to_id = computer_id,
+                message = msg.message_text,
+                timestamp = msg.timestamp,
+                direction = "received"
+            })
+            
+            -- Keep only last 10 messages
+            while #recent_messages > 10 do
+                table.remove(recent_messages, 1)
+            end
+            
+            -- Increment unread count and update display
+            unread_message_count = unread_message_count + 1
+            
+            -- Terminal notification for messages
+            if is_terminal then
+                terminalNotify("Message from " .. msg.sender_name .. ": " .. msg.message_text, true)
+            end
+            
+            drawScreen()
+        end
     elseif msg.type == "heartbeat" then
         log("Processing heartbeat from " .. msg.computer_id)
         network_nodes[msg.computer_id] = {
@@ -1188,6 +1352,19 @@ local function main()
             elseif keyCode == keys.n then
                 -- N key for changing name (both computers and terminals)
                 changeName()
+            elseif keyCode == keys.m and is_terminal then
+                -- M key for messages on terminals
+                showMessaging()
+                unread_message_count = 0  -- Mark messages as read
+            elseif keyCode == keys.m and not is_terminal then
+                -- M key for messages on computers
+                showMessaging()
+                unread_message_count = 0  -- Mark messages as read
+            elseif keyCode == keys.x and is_terminal then
+                -- X key to toggle silent mode on terminals
+                terminal_features.silent_mode = not terminal_features.silent_mode
+                terminalLog("Silent mode " .. (terminal_features.silent_mode and "enabled" or "disabled"))
+                drawScreen()
             elseif keyCode == keys.g and is_terminal then
                 -- G key for general alarm on terminals
                 startAlarm("general")
@@ -1195,11 +1372,6 @@ local function main()
                 -- I key for terminal info
                 showTerminalInfo()
                 drawScreen() -- Redraw main screen after terminal info
-            elseif keyCode == keys.m and is_terminal then
-                -- M key to toggle silent mode
-                terminal_features.silent_mode = not terminal_features.silent_mode
-                terminalLog("Silent mode " .. (terminal_features.silent_mode and "enabled" or "disabled"))
-                drawScreen()
             elseif keyCode == keys.q and is_terminal then
                 -- Q key to quit on terminals
                 print("Terminal shutting down...")
