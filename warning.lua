@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System - v3 we don't do parallel anymore
+-- Enhanced PoggishTown Warning System (actually version 33 apparently)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
