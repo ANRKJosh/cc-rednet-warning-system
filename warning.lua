@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (actually version 33 apparently)
+-- Enhanced PoggishTown Warning System - now we can auto start
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -128,16 +128,13 @@ local function relayMessage(msg)
         markMessageSeen(msg.message_id)
     end
 end
-local function getTimeString()
-    local t = textutils.formatTime(os.time(), true)
-    return "Triggered at: " .. t
-end
 
 -- Format time string
 local function getTimeString()
     local t = textutils.formatTime(os.time(), true)
     return "Triggered at: " .. t
 end
+
 local function getActiveNodeCount()
     local count = 0
     local current_time = os.time()
@@ -337,6 +334,7 @@ local function testNetwork()
     os.pullEvent("key")
     drawScreen()
 end
+
 local function showLogs()
     term.clear()
     term.setCursorPos(1, 1)
@@ -481,81 +479,7 @@ local function init()
     
     -- Wait a moment for any responses
     sleep(2)
-    print("Press any key to continue...")
-    os.pullEvent("key")
-end
-
--- Input handler function
-local function handleInput()
-    while true do
-        local success, err = pcall(function()
-            local _, keyCode = os.pullEvent("key")
-            if keyCode == keys.c then
-                stopAlarm()
-            elseif keyCode == keys.e then
-                startAlarm("evacuation")
-            elseif keyCode == keys.s then
-                showStatus()
-            elseif keyCode == keys.l then
-                showLogs()
-            elseif keyCode == keys.t then
-                testNetwork()
-            elseif not warning_active then
-                -- Any other key starts general alarm
-                startAlarm("general")
-            end
-        end)
-        if not success then
-            log("Input handler error: " .. err)
-        end
-    end
-end
-
--- Network handler function
-local function handleNetwork()
-    while true do
-        local success, err = pcall(function()
-            local _, _, _, _, msg, proto = os.pullEvent("rednet_message")
-            if proto == protocol then
-                -- Debug: Log all received messages
-                log("Raw message received: " .. textutils.serialize(msg))
-                handleMessage(msg)
-            end
-        end)
-        if not success then
-            log("Network handler error: " .. err)
-        end
-    end
-end
-
--- Alarm sound handler function
-local function handleAlarm()
-    while true do
-        local success, err = pcall(function()
-            if warning_active then
-                playAlarm()
-            else
-                sleep(0.1)
-            end
-        end)
-        if not success then
-            log("Alarm handler error: " .. err)
-            sleep(1) -- Prevent rapid error spam
-        end
-    end
-end
-
--- Heartbeat handler function
-local function handleHeartbeat()
-    while true do
-        local success, err = pcall(function()
-            sleep(config.heartbeat_interval)
-            sendHeartbeat()
-        end)
-        if not success then
-            log("Heartbeat handler error: " .. err)
-        end
-    end
+    print("Starting system...")
 end
 
 -- Main loop
@@ -609,7 +533,7 @@ local function main()
             -- Start alarm sound in parallel without blocking main event loop
             parallel.waitForAny(
                 function()
-                    playAlarm()
+                    playAlarmStep()
                 end,
                 function()
                     os.pullEvent() -- Wait for any event to interrupt alarm
