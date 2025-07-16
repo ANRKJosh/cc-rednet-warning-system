@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (we're getting there)
+-- Enhanced PoggishTown Warning System (cleaner edition)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -196,6 +196,164 @@ local function terminalNotify(message, urgent)
     
     -- Update connection strength based on network activity
     terminal_features.connection_strength = math.min(5, terminal_features.connection_strength + 1)
+end
+
+-- Draw enhanced status UI with terminal-optimized layout
+local function drawScreen()
+    term.clear()
+    term.setCursorPos(1, 1)
+    term.setTextColor(colors.white)
+    term.setBackgroundColor(colors.black)
+    
+    if is_terminal then
+        -- Compact terminal layout
+        print("=============================")
+        print("= POGGISHTOWN ALERT TERM   =")
+        print("=============================")
+        
+        -- Show silent mode right after title if enabled
+        if terminal_features and terminal_features.silent_mode then
+            term.setTextColor(colors.orange)
+            print("         SILENT MODE")
+            term.setTextColor(colors.white)
+        end
+        
+        print("") -- Add blank line
+        
+        -- Device info (compact)
+        print("ID: " .. computer_id .. " | Nodes: " .. getActiveNodeCount())
+        print("") -- Add blank line
+        
+        -- Status (compact)
+        if warning_active then
+            term.setTextColor(colors.red)
+            print("ALERT: " .. string.upper(current_alarm_type))
+            term.setTextColor(colors.white)
+            if alarm_start_time then
+                local t = textutils.formatTime(alarm_start_time, true)
+                print("Start: " .. t)
+            end
+            if alarm_triggered_by then
+                print("By: #" .. alarm_triggered_by)
+            end
+            
+            -- Auto-stop countdown
+            if alarm_start_time then
+                local elapsed = os.time() - alarm_start_time
+                local remaining = config.auto_stop_timeout - elapsed
+                if remaining > 0 then
+                    print("Stop: " .. math.floor(remaining) .. "s")
+                end
+            end
+        else
+            term.setTextColor(colors.green)
+            print("STATUS: Ready")
+        end
+        
+        term.setTextColor(colors.white)
+        print("") -- Add blank line
+        print("Terminal Controls:")
+        print("G - General | E - Evacuation")
+        print("C - Cancel  | S - Status")
+        print("U - Update  | I - Terminal Info")
+        print("M - Silent Mode | Q - Quit")
+        
+        -- Show update indicator for terminals
+        if update_available then
+            print("")
+            term.setTextColor(colors.yellow)
+            print("UPDATE READY! Press U")
+            term.setTextColor(colors.white)
+        end
+        
+        -- Terminal-specific status (only show if we have info)
+        local coords = terminal_features and terminal_features.last_gps_coords or nil
+        local show_status = coords or (terminal_features and terminal_features.connection_strength > 0)
+        
+        if show_status then
+            print("")
+            term.setTextColor(colors.cyan)
+            
+            -- Only show GPS if we have coordinates
+            if coords then
+                print("GPS: " .. coords.x .. "," .. coords.y .. "," .. coords.z)
+            end
+            
+            -- Show signal strength
+            if terminal_features then
+                print("Signal: " .. string.rep("▐", terminal_features.connection_strength) .. string.rep("▁", 5 - terminal_features.connection_strength))
+            end
+            
+            term.setTextColor(colors.white)
+        end
+        
+    else
+        -- Full computer layout with fixed spacing
+        print("===============================")
+        print("= PoggishTown Warning System  =")
+        print("===============================")
+        print("")
+        
+        -- Computer info
+        print("ID: " .. computer_id .. " | Nodes: " .. getActiveNodeCount())
+        print("")
+        
+        -- Status with consistent positioning
+        if warning_active then
+            term.setTextColor(colors.red)
+            print("STATUS: !! WARNING ACTIVE !!")
+            term.setTextColor(colors.yellow)
+            print("Type: " .. string.upper(current_alarm_type))
+            term.setTextColor(colors.white)
+            if alarm_start_time then
+                local t = textutils.formatTime(alarm_start_time, true)
+                print("Started: " .. t)
+            end
+            if alarm_triggered_by then
+                print("By: Computer " .. alarm_triggered_by)
+            end
+            
+            -- Auto-stop countdown
+            if alarm_start_time then
+                local elapsed = os.time() - alarm_start_time
+                local remaining = config.auto_stop_timeout - elapsed
+                if remaining > 0 then
+                    print("Auto-stop: " .. math.floor(remaining) .. "s")
+                end
+            end
+            
+            -- Add spacing to push controls to consistent position
+            print("")
+            print("")
+            print("")
+        else
+            term.setTextColor(colors.green)
+            print("STATUS: System Ready")
+            
+            -- Add spacing to keep controls in same position when no alarm
+            print("")
+            print("")
+            print("")
+            print("")
+            print("")
+            print("")
+        end
+        
+        term.setTextColor(colors.white)
+        print("Controls:")
+        print("Any key - General alarm")
+        print("E - Evacuation alarm")
+        print("C - Cancel alarm")
+        print("S - Status | L - Logs | T - Test | U - Update")
+        
+        -- Show update indicator
+        if update_available then
+            print("")
+            term.setTextColor(colors.yellow)
+            print("UPDATE AVAILABLE! Press U to install")
+            term.setTextColor(colors.white)
+        end
+    end
 end
 
 -- Logging system with rotation
@@ -497,145 +655,6 @@ local function getActiveNodeCount()
         end
     end
     return count
-end
-
--- Draw enhanced status UI with terminal-optimized layout
-local function drawScreen()
-    term.clear()
-    term.setCursorPos(1, 1)
-    term.setTextColor(colors.white)
-    term.setBackgroundColor(colors.black)
-    
-    if is_terminal then
-        -- Compact terminal layout
-        print("=============================")
-        print("= POGGISHTOWN ALERT TERM   =")
-        print("=============================")
-        print("") -- Add blank line
-        
-        -- Device info (compact)
-        print("ID: " .. computer_id .. " | Nodes: " .. getActiveNodeCount())
-        print("") -- Add blank line
-        
-        -- Status (compact)
-        if warning_active then
-            term.setTextColor(colors.red)
-            print("ALERT: " .. string.upper(current_alarm_type))
-            term.setTextColor(colors.white)
-            if alarm_start_time then
-                local t = textutils.formatTime(alarm_start_time, true)
-                print("Start: " .. t)
-            end
-            if alarm_triggered_by then
-                print("By: #" .. alarm_triggered_by)
-            end
-            
-            -- Auto-stop countdown
-            if alarm_start_time then
-                local elapsed = os.time() - alarm_start_time
-                local remaining = config.auto_stop_timeout - elapsed
-                if remaining > 0 then
-                    print("Stop: " .. math.floor(remaining) .. "s")
-                end
-            end
-        else
-            term.setTextColor(colors.green)
-            print("STATUS: Ready")
-        end
-        
-        term.setTextColor(colors.white)
-        print("") -- Add blank line
-        print("Terminal Controls:")
-        print("G - General | E - Evacuation")
-        print("C - Cancel  | S - Status")
-        print("U - Update  | I - Terminal Info")
-        print("M - Silent Mode | Q - Quit")
-        
-        -- Show update indicator for terminals
-        if update_available then
-            print("")
-            term.setTextColor(colors.yellow)
-            print("UPDATE READY! Press U")
-            term.setTextColor(colors.white)
-        end
-        
-        -- Terminal-specific status
-        print("")
-        term.setTextColor(colors.cyan)
-        
-        -- GPS and other status
-        local coords = terminal_features and terminal_features.last_gps_coords or nil
-        if coords then
-            print("GPS: " .. coords.x .. "," .. coords.y .. "," .. coords.z)
-        else
-            print("GPS: Searching...")
-        end
-        
-        if terminal_features then
-            print("Signal: " .. string.rep("▐", terminal_features.connection_strength) .. string.rep("▁", 5 - terminal_features.connection_strength))
-            
-            if terminal_features.silent_mode then
-                term.setTextColor(colors.orange)
-                print("SILENT MODE")
-            end
-        end
-        
-        term.setTextColor(colors.white)
-    else
-        -- Full computer layout
-        print("===============================")
-        print("= PoggishTown Warning System  =")
-        print("===============================")
-        print("") -- Add blank line
-        
-        -- Computer info
-        print("ID: " .. computer_id .. " | Nodes: " .. getActiveNodeCount())
-        print("") -- Add blank line
-        
-        -- Status
-        if warning_active then
-            term.setTextColor(colors.red)
-            print("STATUS: !! WARNING ACTIVE !!")
-            term.setTextColor(colors.yellow)
-            print("Type: " .. string.upper(current_alarm_type))
-            term.setTextColor(colors.white)
-            if alarm_start_time then
-                local t = textutils.formatTime(alarm_start_time, true)
-                print("Started: " .. t)
-            end
-            if alarm_triggered_by then
-                print("By: Computer " .. alarm_triggered_by)
-            end
-            
-            -- Auto-stop countdown
-            if alarm_start_time then
-                local elapsed = os.time() - alarm_start_time
-                local remaining = config.auto_stop_timeout - elapsed
-                if remaining > 0 then
-                    print("Auto-stop: " .. math.floor(remaining) .. "s")
-                end
-            end
-        else
-            term.setTextColor(colors.green)
-            print("STATUS: System Ready")
-        end
-        
-        term.setTextColor(colors.white)
-        print("") -- Add blank line
-        print("Controls:")
-        print("Any key - General alarm")
-        print("E - Evacuation alarm")
-        print("C - Cancel alarm")
-        print("S - Status | L - Logs | T - Test | U - Update")
-        
-        -- Show update indicator
-        if update_available then
-            print("")
-            term.setTextColor(colors.yellow)
-            print("UPDATE AVAILABLE! Press U to install")
-            term.setTextColor(colors.white)
-        end
-    end
 end
 
 -- Rest of your existing functions (broadcast, sendHeartbeat, startAlarm, stopAlarm, etc.)
