@@ -1,6 +1,6 @@
--- Enhanced PoggishTown Warning System with iPhone-style Terminal GUI
--- Speaker + Modem required (expected on left/right)
--- Redstone output on BACK when alarm is active
+-- Enhanced PoggishTown Warning System with iPhone-style Terminal GUI (V2 Phone)
+-- Computers: Traditional keyboard interface
+-- Terminals: Touch-friendly GUI interface
 
 local protocol = "poggishtown_warning"
 local warning_active = false
@@ -8,8 +8,25 @@ local modem_side = nil
 local speaker = peripheral.find("speaker")
 local alarm_start_time = nil
 local redstone_output_side = "back"
+local computer_id = os.getComputerID()
 
--- Check if we're running on a wireless terminal
+-- Configuration
+local config = {
+    heartbeat_interval = 30,
+    max_offline_time = 90,
+    auto_stop_timeout = 300,Update warning.lua
+    volume_increment = 0.3,
+    max_volume = 15.0,
+    base_volume = 3.0,
+    enable_relay = true,
+    max_hops = 3,
+    relay_delay = 0.2,
+    update_url = "https://raw.githubusercontent.com/ANRKJosh/cc-rednet-warning-system/refs/heads/main/warning.lua",
+    allow_custom_names = true,
+    custom_name = nil
+}
+
+-- Check if device is a wireless terminal
 local function isWirelessTerminal()
     if pocket then return true end
     
@@ -32,47 +49,23 @@ local function isWirelessTerminal()
     return has_only_modem and #peripherals == 1
 end
 
--- Configuration
-local config = {
-    heartbeat_interval = 30,
-    max_offline_time = 90,
-    auto_stop_timeout = 300,
-    volume_increment = 0.3,
-    max_volume = 15.0,
-    base_volume = 3.0,
-    enable_relay = true,
-    max_hops = 3,
-    relay_delay = 0.2,
-    update_url = "https://raw.githubusercontent.com/ANRKJosh/cc-rednet-warning-system/refs/heads/main/warning.lua",
-    background_update_check = true,
-    update_check_interval = 300,
-    auto_apply_updates = false,
-    allow_custom_names = true,
-    custom_name = nil
-}
+local is_terminal = isWirelessTerminal()
 
--- Network state tracking
+-- Global state variables
 local network_nodes = {}
-local computer_id = os.getComputerID()
 local alarm_triggered_by = nil
 local message_history = {}
 local alarm_note_index = 1
-local is_terminal = isWirelessTerminal()
-local update_available = false
-local last_update_check = 0
-local background_update_running = false
 local recent_messages = {}
 local unread_message_count = 0
 
 -- Terminal features
 local terminal_features = {
-    location_tracking = true,
     silent_mode = false,
     vibrate_alerts = true,
     compact_log = {},
     last_gps_coords = nil,
-    connection_strength = 0,
-    recent_messages = {}
+    connection_strength = 0
 }
 
 -- GUI state for terminals
@@ -100,7 +93,7 @@ local alarm_patterns = {
 
 local current_alarm_type = "general"
 
--- Custom naming functions
+-- Utility functions
 local function getDisplayName()
     if config.custom_name then
         return config.custom_name
@@ -145,20 +138,37 @@ local function loadCustomName()
     end
 end
 
--- Terminal functions
-local function updateGPS()
-    if is_terminal and terminal_features and terminal_features.location_tracking and gps then
-        local x, y, z = gps.locate(2)
-        if x and y and z then
-            terminal_features.last_gps_coords = {x = math.floor(x), y = math.floor(y), z = math.floor(z)}
-            return terminal_features.last_gps_coords
+local function getActiveNodeCount()
+    local count = 0
+    local current_time = os.time()
+    for id, node in pairs(network_nodes) do
+        if (current_time - node.last_seen) <= config.max_offline_time then
+            count = count + 1
         end
     end
-    return terminal_features and terminal_features.last_gps_coords or nil
+    return count
 end
 
+local function generateMessageId()
+    return computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999)
+end
+
+local function isMessageSeen(msg_id)
+    return message_history[msg_id] ~= nil
+end
+
+local function markMessageSeen(msg_id)
+    message_history[msg_id] = os.time()
+    for id, timestamp in pairs(message_history) do
+        if (os.time() - timestamp) > 300 then
+            message_history[id] = nil
+        end
+    end
+end
+
+-- Terminal functions
 local function terminalVibrate()
-    if not is_terminal or not terminal_features or not terminal_features.vibrate_alerts then return end
+    if not is_terminal or not terminal_features.vibrate_alerts then return end
     local original_bg = term.getBackgroundColor()
     for i = 1, 3 do
         term.setBackgroundColor(colors.white)
@@ -171,7 +181,7 @@ local function terminalVibrate()
 end
 
 local function terminalLog(message)
-    if not is_terminal or not terminal_features then return end
+    if not is_terminal then return end
     local timestamp = textutils.formatTime(os.time(), true)
     local entry = "[" .. timestamp .. "] " .. message
     table.insert(terminal_features.compact_log, entry)
@@ -181,14 +191,45 @@ local function terminalLog(message)
 end
 
 local function terminalNotify(message, urgent)
-    if not is_terminal or not terminal_features then return end
+    if not is_terminal then return end
     if urgent and not terminal_features.silent_mode then
         terminalVibrate()
     end
     terminalLog(message)
 end
 
--- GUI Functions for terminals
+-- Messaging functions
+local function sendDirectMessage(target_id, message_text)
+    if not is_terminal then return end
+    
+    local message = {
+        type = "direct_message",
+        target_id = target_id,
+        sender_id = computer_id,
+        sender_name = getDisplayName(),
+        message_text = message_text,
+        timestamp = os.time(),
+        message_id = generateMessageId()
+    }
+    
+    rednet.broadcast(message, protocol)
+    markMessageSeen(message.message_id)
+    
+    table.insert(recent_messages, {
+        from_id = computer_id,
+        from_name = getDisplayName(),
+        to_id = target_id,
+        message = message_text,
+        timestamp = os.time(),
+        direction = "sent"
+    })
+    
+    while #recent_messages > 10 do
+        table.remove(recent_messages, 1)
+    end
+end
+
+-- GUI Drawing Functions
 local function drawStatusBar()
     term.setBackgroundColor(colors.black)
     term.setTextColor(colors.white)
@@ -258,12 +299,7 @@ local function drawHomeScreen()
     term.setCursorPos(2, 5)
     if warning_active then
         term.setTextColor(colors.red)
-        write("🚨 " .. string.upper(current_alarm_type) .. " ALERT ACTIVE")
-        term.setTextColor(colors.orange)
-        term.setCursorPos(2, 6)
-        if alarm_triggered_by then
-            write("By: " .. (network_nodes[alarm_triggered_by] and network_nodes[alarm_triggered_by].display_name or ("ID:" .. alarm_triggered_by)))
-        end
+        write("🚨 " .. string.upper(current_alarm_type) .. " ALERT")
     else
         term.setTextColor(colors.green)
         write("✅ System Ready")
@@ -273,7 +309,7 @@ local function drawHomeScreen()
     local start_x, start_y = 3, 8
     local spacing = 2
     
-    -- Row 1
+    -- Row 1 - Alarm, Messages, Contacts
     local alarm_color = warning_active and colors.red or colors.orange
     drawAppIcon(start_x, start_y, icon_w, icon_h, alarm_color, colors.white, "🚨", "Alarm")
     
@@ -283,21 +319,15 @@ local function drawHomeScreen()
     
     drawAppIcon(start_x + (icon_w + spacing) * 2, start_y, icon_w, icon_h, colors.gray, colors.white, "👥", "Contacts")
     
-    -- Row 2
+    -- Row 2 - Settings, Info
     start_y = start_y + icon_h + spacing + 1
     drawAppIcon(start_x, start_y, icon_w, icon_h, colors.gray, colors.white, "⚙️", "Settings")
     drawAppIcon(start_x + icon_w + spacing, start_y, icon_w, icon_h, colors.cyan, colors.white, "ℹ️", "Info")
     
-    if terminal_features and terminal_features.silent_mode then
+    if terminal_features.silent_mode then
         term.setTextColor(colors.orange)
         term.setCursorPos(2, h - 1)
         write("🔇 Silent Mode")
-    end
-    
-    if update_available then
-        term.setTextColor(colors.yellow)
-        term.setCursorPos(w - 8, h - 1)
-        write("Update!")
     end
 end
 
@@ -320,7 +350,7 @@ local function drawAlarmScreen()
         term.setTextColor(colors.red)
         term.setCursorPos(2, 7)
         write("ALARM ACTIVE: " .. string.upper(current_alarm_type))
-        drawAppIcon(3, 10, 10, 4, colors.red, colors.white, "CANCEL", "Cancel Alarm")
+        drawAppIcon(3, 10, 10, 4, colors.red, colors.white, "CANCEL", "")
     else
         term.setTextColor(colors.white)
         term.setCursorPos(2, 7)
@@ -381,9 +411,6 @@ local function drawMessagesScreen()
         write(" " .. display_msg .. " ")
         
         term.setBackgroundColor(colors.black)
-        term.setCursorPos(2, y + 2)
-        term.setTextColor(colors.gray)
-        write(textutils.formatTime(msg.timestamp, true))
     end
 end
 
@@ -452,12 +479,10 @@ local function drawSettingsScreen()
     term.setCursorPos(2, 5)
     write("Settings")
     
-    local settings_y = 7
-    
-    term.setCursorPos(2, settings_y)
+    term.setCursorPos(2, 7)
     write("Silent Mode")
-    term.setCursorPos(w - 4, settings_y)
-    if terminal_features and terminal_features.silent_mode then
+    term.setCursorPos(w - 4, 7)
+    if terminal_features.silent_mode then
         term.setTextColor(colors.green)
         write("ON")
     else
@@ -465,23 +490,12 @@ local function drawSettingsScreen()
         write("OFF")
     end
     
-    settings_y = settings_y + 2
-    
     term.setTextColor(colors.white)
-    term.setCursorPos(2, settings_y)
+    term.setCursorPos(2, 9)
     write("Device Name")
     term.setTextColor(colors.blue)
-    term.setCursorPos(w - 6, settings_y)
+    term.setCursorPos(w - 6, 9)
     write("Edit >")
-    
-    settings_y = settings_y + 2
-    
-    term.setTextColor(colors.white)
-    term.setCursorPos(2, settings_y)
-    write("Check Updates")
-    term.setTextColor(colors.blue)
-    term.setCursorPos(w - 6, settings_y)
-    write("Check >")
 end
 
 local function handleTouch(x, y)
@@ -492,22 +506,26 @@ local function handleTouch(x, y)
         local start_x, start_y = 3, 8
         local spacing = 2
         
+        -- Alarm app
         if isInBounds(x, y, start_x, start_y, icon_w, icon_h) then
             gui_state.current_screen = "alarm_trigger"
             return true
         end
         
+        -- Messages app
         if isInBounds(x, y, start_x + icon_w + spacing, start_y, icon_w, icon_h) then
             gui_state.current_screen = "messages"
             unread_message_count = 0
             return true
         end
         
+        -- Contacts app
         if isInBounds(x, y, start_x + (icon_w + spacing) * 2, start_y, icon_w, icon_h) then
             gui_state.current_screen = "contacts"
             return true
         end
         
+        -- Settings app (row 2)
         start_y = start_y + icon_h + spacing + 1
         if isInBounds(x, y, start_x, start_y, icon_w, icon_h) then
             gui_state.current_screen = "settings"
@@ -515,24 +533,28 @@ local function handleTouch(x, y)
         end
         
     elseif gui_state.current_screen == "alarm_trigger" then
+        -- Back button
         if isInBounds(x, y, 2, 3, 6, 1) then
             gui_state.current_screen = "home"
             return true
         end
         
         if warning_active then
+            -- Cancel alarm
             if isInBounds(x, y, 3, 10, 10, 4) then
                 stopAlarm()
                 gui_state.current_screen = "home"
                 return true
             end
         else
+            -- General alarm
             if isInBounds(x, y, 3, 9, 10, 3) then
                 startAlarm("general")
                 gui_state.current_screen = "home"
                 return true
             end
             
+            -- Evacuation alarm
             if isInBounds(x, y, 3, 13, 10, 3) then
                 startAlarm("evacuation")
                 gui_state.current_screen = "home"
@@ -541,22 +563,26 @@ local function handleTouch(x, y)
         end
         
     elseif gui_state.current_screen == "messages" then
+        -- Back button
         if isInBounds(x, y, 2, 3, 6, 1) then
             gui_state.current_screen = "home"
             return true
         end
         
+        -- New message button
         if isInBounds(x, y, w - 6, 3, 6, 1) then
             gui_state.current_screen = "contacts"
             return true
         end
         
     elseif gui_state.current_screen == "contacts" then
+        -- Back button
         if isInBounds(x, y, 2, 3, 6, 1) then
             gui_state.current_screen = "messages"
             return true
         end
         
+        -- Contact message buttons
         local current_time = os.time()
         local online_terminals = {}
         
@@ -580,24 +606,22 @@ local function handleTouch(x, y)
         end
         
     elseif gui_state.current_screen == "settings" then
+        -- Back button
         if isInBounds(x, y, 2, 3, 6, 1) then
             gui_state.current_screen = "home"
             return true
         end
         
+        -- Silent mode toggle
         if y == 7 then
             terminal_features.silent_mode = not terminal_features.silent_mode
             terminalLog("Silent mode " .. (terminal_features.silent_mode and "enabled" or "disabled"))
             return true
         end
         
+        -- Change name
         if y == 9 and x >= w - 6 then
             changeName()
-            return true
-        end
-        
-        if y == 11 and x >= w - 6 then
-            checkForUpdates(true)
             return true
         end
     end
@@ -643,70 +667,12 @@ local function drawGUIScreen()
     end
 end
 
--- Utility functions
-local function getActiveNodeCount()
-    local count = 0
-    local current_time = os.time()
-    for id, node in pairs(network_nodes) do
-        if (current_time - node.last_seen) <= config.max_offline_time then
-            count = count + 1
-        end
-    end
-    return count
-end
-
-local function generateMessageId()
-    return computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999)
-end
-
-local function isMessageSeen(msg_id)
-    return message_history[msg_id] ~= nil
-end
-
-local function markMessageSeen(msg_id)
-    message_history[msg_id] = os.time()
-    for id, timestamp in pairs(message_history) do
-        if (os.time() - timestamp) > 300 then
-            message_history[id] = nil
-        end
-    end
-end
-
-local function sendDirectMessage(target_id, message_text)
-    if not is_terminal then return end
-    
-    local message = {
-        type = "direct_message",
-        target_id = target_id,
-        sender_id = computer_id,
-        sender_name = getDisplayName(),
-        message_text = message_text,
-        timestamp = os.time(),
-        message_id = generateMessageId()
-    }
-    
-    rednet.broadcast(message, protocol)
-    markMessageSeen(message.message_id)
-    
-    table.insert(recent_messages, {
-        from_id = computer_id,
-        from_name = getDisplayName(),
-        to_id = target_id,
-        message = message_text,
-        timestamp = os.time(),
-        direction = "sent"
-    })
-    
-    while #recent_messages > 10 do
-        table.remove(recent_messages, 1)
-    end
-end
-
--- Main screen drawing function
+-- Main drawing function
 local function drawScreen()
     if is_terminal then
         drawGUIScreen()
     else
+        -- Computer interface
         term.clear()
         term.setCursorPos(1, 1)
         term.setTextColor(colors.white)
@@ -764,46 +730,16 @@ local function drawScreen()
         print("C - Cancel alarm")
         print("S - Status | L - Logs | T - Test")
         print("U - Update | N - Change Name")
-        
-        if update_available then
-            print("")
-            term.setTextColor(colors.yellow)
-            print("UPDATE AVAILABLE! Press U to install")
-            term.setTextColor(colors.white)
-        end
     end
 end
 
--- Logging system
+-- Logging
 local log_file = "warning_system.log"
-local max_log_size = 10000
 
 local function log(message)
     local timestamp = textutils.formatTime(os.time(), true)
     local device_type = is_terminal and "[TERMINAL]" or "[COMPUTER]"
     local entry = "[" .. timestamp .. "] " .. device_type .. " " .. message .. "\n"
-    
-    if fs.exists(log_file) and fs.getSize(log_file) > max_log_size then
-        local old_file = fs.open(log_file, "r")
-        local lines = {}
-        if old_file then
-            local line = old_file.readLine()
-            while line do
-                table.insert(lines, line)
-                line = old_file.readLine()
-            end
-            old_file.close()
-            
-            local new_file = fs.open(log_file, "w")
-            if new_file then
-                local start = math.max(1, #lines - 49)
-                for i = start, #lines do
-                    new_file.writeLine(lines[i])
-                end
-                new_file.close()
-            end
-        end
-    end
     
     local file = fs.open(log_file, "a")
     if file then
@@ -813,50 +749,6 @@ local function log(message)
 end
 
 -- Network functions
-local function hasEnderModem()
-    local modem = peripheral.wrap(modem_side)
-    if modem then
-        if modem.isWireless and not modem.isWireless() then
-            return true
-        end
-        if not modem.isWireless then
-            return true
-        end
-        local modem_type = peripheral.getType(modem_side)
-        if modem_type == "modem" then
-            local success, result = pcall(function() return modem.isWireless() end)
-            if not success or not result then
-                return true
-            end
-        end
-    end
-    return false
-end
-
-local function relayMessage(msg)
-    if not config.enable_relay then return end
-    if not msg.hops then msg.hops = 0 end
-    if msg.hops >= config.max_hops then return end
-    
-    if msg.origin_id == computer_id then return end
-    if msg.message_id and isMessageSeen(msg.message_id) then return end
-    
-    if hasEnderModem() then
-        if msg.hops > 1 then return end
-    end
-    
-    sleep(config.relay_delay)
-    
-    msg.hops = msg.hops + 1
-    msg.relayed_by = computer_id
-    
-    rednet.broadcast(msg, protocol)
-    
-    if msg.message_id then
-        markMessageSeen(msg.message_id)
-    end
-end
-
 local function broadcast(action, alarm_type, source_id)
     local message = {
         type = "warning",
@@ -869,3 +761,462 @@ local function broadcast(action, alarm_type, source_id)
         hops = 0,
         device_type = is_terminal and "terminal" or "computer"
     }
+    rednet.broadcast(message, protocol)
+    markMessageSeen(message.message_id)
+    log("Broadcast: " .. action .. " (" .. (alarm_type or "general") .. ") from " .. (source_id or computer_id))
+end
+
+local function sendHeartbeat()
+    local message = {
+        type = "heartbeat",
+        computer_id = computer_id,
+        origin_id = computer_id,
+        timestamp = os.time(),
+        message_id = generateMessageId(),
+        hops = 0,
+        device_type = is_terminal and "terminal" or "computer",
+        display_name = getDisplayName(),
+        alarm_active = warning_active,
+        alarm_type = current_alarm_type,
+        alarm_start_time = alarm_start_time,
+        alarm_triggered_by = alarm_triggered_by
+    }
+    rednet.broadcast(message, protocol)
+    markMessageSeen(message.message_id)
+end
+
+local function startAlarm(alarm_type)
+    alarm_type = alarm_type or "general"
+    if not warning_active then
+        warning_active = true
+        current_alarm_type = alarm_type
+        alarm_start_time = os.time()
+        alarm_triggered_by = computer_id
+        alarm_note_index = 1
+        
+        if not is_terminal then
+            redstone.setOutput(redstone_output_side, true)
+        else
+            terminalNotify("ALARM TRIGGERED: " .. string.upper(alarm_type), true)
+        end
+        
+        drawScreen()
+        broadcast("start", alarm_type, computer_id)
+        log("Alarm started: " .. alarm_type .. " by " .. (is_terminal and "terminal" or "computer") .. " " .. computer_id)
+    end
+end
+
+local function stopAlarm()
+    if warning_active then
+        warning_active = false
+        alarm_note_index = 1
+        
+        if not is_terminal then
+            redstone.setOutput(redstone_output_side, false)
+        else
+            terminalNotify("ALARM CANCELLED", false)
+        end
+        
+        drawScreen()
+        broadcast("stop", current_alarm_type, computer_id)
+        log("Alarm stopped by " .. (is_terminal and "terminal" or "computer") .. " " .. computer_id)
+        alarm_triggered_by = nil
+    end
+end
+
+local function showStatus()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== System Status ===")
+    print("Device Type: " .. (is_terminal and "Terminal" or "Computer"))
+    print("Display Name: " .. getDisplayName())
+    print("Computer ID: " .. computer_id)
+    print("Alarm Active: " .. tostring(warning_active))
+    if warning_active then
+        print("Alarm Type: " .. current_alarm_type)
+        print("Triggered by: " .. (alarm_triggered_by or "Unknown"))
+    end
+    print("\nNetwork Nodes:")
+    
+    local current_time = os.time()
+    for id, node in pairs(network_nodes) do
+        local status = (current_time - node.last_seen) <= config.max_offline_time and "ONLINE" or "OFFLINE"
+        local name_info = node.display_name and (" [" .. node.display_name .. "]") or ""
+        print("  Computer " .. id .. name_info .. ": " .. status)
+    end
+    
+    print("\nPress any key to return...")
+    os.pullEvent("key")
+    drawScreen()
+end
+
+local function showLogs()
+    if is_terminal then return end
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== Recent Logs ===")
+    
+    if fs.exists(log_file) then
+        local file = fs.open(log_file, "r")
+        if file then
+            local lines = {}
+            local line = file.readLine()
+            while line do
+                table.insert(lines, line)
+                line = file.readLine()
+            end
+            file.close()
+            
+            local start = math.max(1, #lines - 14)
+            for i = start, #lines do
+                print(lines[i])
+            end
+        end
+    else
+        print("No log file found.")
+    end
+    
+    print("\nPress any key to return...")
+    os.pullEvent("key")
+    drawScreen()
+end
+
+local function testNetwork()
+    if is_terminal then return end
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== Network Test ===")
+    print("Computer ID: " .. computer_id)
+    print("Protocol: " .. protocol)
+    
+    print("\nSending test broadcast...")
+    local test_msg = {
+        type = "test",
+        from = computer_id,
+        message = "Hello from computer " .. computer_id,
+        timestamp = os.time()
+    }
+    rednet.broadcast(test_msg, protocol)
+    
+    print("Listening for responses (5 seconds)...")
+    local responses = 0
+    local start_time = os.clock()
+    
+    while (os.clock() - start_time) < 5 do
+        local sender_id, message, proto = rednet.receive(protocol, 1)
+        if sender_id and message and message.type == "test" and message.from ~= computer_id then
+            print("Response from Computer " .. message.from)
+            responses = responses + 1
+        end
+    end
+    
+    print("\nTest complete. Received " .. responses .. " responses.")
+    print("\nPress any key to return...")
+    os.pullEvent("key")
+    drawScreen()
+end
+
+local function handleMessage(msg)
+    log("Processing message type: " .. (msg.type or "unknown"))
+    
+    if msg.type == "test" and msg.from ~= computer_id and msg.message and not string.find(msg.message, "Response from") then
+        local response = {
+            type = "test",
+            from = computer_id,
+            message = "Response from " .. (is_terminal and "terminal" or "computer") .. " " .. computer_id,
+            timestamp = os.time()
+        }
+        rednet.broadcast(response, protocol)
+        return
+    end
+    
+    if msg.type == "test" and msg.message and string.find(msg.message, "Response from") then
+        return
+    end
+    
+    if msg.origin_id and msg.origin_id == computer_id then 
+        return 
+    end
+    
+    if msg.message_id and isMessageSeen(msg.message_id) then 
+        return 
+    end
+    
+    if msg.message_id and msg.type ~= "test" then
+        markMessageSeen(msg.message_id)
+    end
+    
+    if msg.type == "warning" then
+        if msg.action == "start" and not warning_active then
+            warning_active = true
+            current_alarm_type = msg.alarm_type or "general"
+            alarm_start_time = os.time()
+            alarm_triggered_by = msg.source_id
+            
+            if not is_terminal then
+                redstone.setOutput(redstone_output_side, true)
+            else
+                terminalNotify("NETWORK ALARM: " .. string.upper(current_alarm_type), true)
+            end
+            
+            drawScreen()
+            log("Alarm started remotely by computer " .. msg.source_id)
+        elseif msg.action == "stop" and warning_active then
+            warning_active = false
+            
+            if not is_terminal then
+                redstone.setOutput(redstone_output_side, false)
+            else
+                terminalNotify("ALARM CANCELLED BY NETWORK", false)
+            end
+            
+            drawScreen()
+            log("Alarm stopped remotely by computer " .. msg.source_id)
+            alarm_triggered_by = nil
+        end
+    elseif msg.type == "direct_message" then
+        if msg.target_id == computer_id and is_terminal then
+            log("Received message from " .. msg.sender_name)
+            
+            table.insert(recent_messages, {
+                from_id = msg.sender_id,
+                from_name = msg.sender_name,
+                to_id = computer_id,
+                message = msg.message_text,
+                timestamp = msg.timestamp,
+                direction = "received"
+            })
+            
+            while #recent_messages > 10 do
+                table.remove(recent_messages, 1)
+            end
+            
+            unread_message_count = unread_message_count + 1
+            terminalNotify("Message from " .. msg.sender_name, true)
+            drawScreen()
+        end
+    elseif msg.type == "heartbeat" then
+        network_nodes[msg.computer_id] = {
+            last_seen = os.time(),
+            computer_id = msg.computer_id,
+            hops = msg.hops or 0,
+            device_type = msg.device_type or "computer",
+            display_name = msg.display_name or tostring(msg.computer_id)
+        }
+        
+        if msg.alarm_active and not warning_active and msg.computer_id ~= computer_id then
+            warning_active = true
+            current_alarm_type = msg.alarm_type or "general"
+            alarm_start_time = msg.alarm_start_time or os.time()
+            alarm_triggered_by = msg.alarm_triggered_by
+            alarm_note_index = 1
+            
+            if not is_terminal then
+                redstone.setOutput(redstone_output_side, true)
+            else
+                terminalNotify("JOINING ACTIVE ALARM: " .. string.upper(current_alarm_type), true)
+            end
+            
+            drawScreen()
+        end
+        
+        if is_terminal then
+            terminal_features.connection_strength = math.min(5, terminal_features.connection_strength + 1)
+        end
+    end
+end
+
+local function init()
+    loadCustomName()
+    
+    if is_terminal then
+        print("Running on wireless terminal")
+        log("System started on wireless terminal")
+    else
+        print("Running on computer")
+        log("System started on computer")
+    end
+    
+    -- Find modem
+    for _, side in pairs(peripheral.getNames()) do
+        if peripheral.getType(side) == "modem" then
+            modem_side = side
+            rednet.open(side)
+            print("Modem found on " .. side)
+            break
+        end
+    end
+
+    if not modem_side then
+        error("No modem found. Please attach one.")
+    end
+    
+    print("Computer ID: " .. computer_id)
+    print("Protocol: " .. protocol)
+    
+    sleep(1)
+    print("Sending initial heartbeat...")
+    sendHeartbeat()
+    
+    sleep(1)
+    print("Starting system...")
+end
+
+local function main()
+    init()
+    drawScreen()
+    
+    log("System started")
+    
+    local heartbeat_timer = os.startTimer(config.heartbeat_interval)
+    local alarm_timer = nil
+    
+    while true do
+        local event, param1, param2, param3 = os.pullEvent()
+        
+        if event == "key" then
+            local keyCode = param1
+            
+            -- Handle typing mode for terminals
+            if is_terminal and gui_state.typing_mode then
+                if keyCode == keys.enter then
+                    if gui_state.message_input ~= "" and gui_state.selected_contact then
+                        sendDirectMessage(gui_state.selected_contact.id, gui_state.message_input)
+                    end
+                    gui_state.typing_mode = false
+                    gui_state.selected_contact = nil
+                    gui_state.message_input = ""
+                    gui_state.current_screen = "messages"
+                    drawScreen()
+                elseif keyCode == keys.backspace then
+                    gui_state.message_input = gui_state.message_input:sub(1, -2)
+                    drawScreen()
+                elseif keyCode == keys.delete then
+                    gui_state.typing_mode = false
+                    gui_state.selected_contact = nil
+                    gui_state.message_input = ""
+                    gui_state.current_screen = "contacts"
+                    drawScreen()
+                end
+            else
+                -- Regular key handling
+                if keyCode == keys.c then
+                    stopAlarm()
+                elseif keyCode == keys.e then
+                    startAlarm("evacuation")
+                elseif keyCode == keys.s then
+                    showStatus()
+                elseif keyCode == keys.l and not is_terminal then
+                    showLogs()
+                elseif keyCode == keys.t and not is_terminal then
+                    testNetwork()
+                elseif keyCode == keys.n then
+                    changeName()
+                elseif keyCode == keys.q and is_terminal then
+                    print("Terminal shutting down...")
+                    break
+                elseif not warning_active and not is_terminal then
+                    startAlarm("general")
+                end
+            end
+            
+        elseif event == "char" then
+            if is_terminal and gui_state.typing_mode then
+                local char = param1
+                gui_state.message_input = gui_state.message_input .. char
+                drawScreen()
+            end
+            
+        elseif event == "mouse_click" then
+            if is_terminal then
+                local button, x, y = param1, param2, param3
+                if button == 1 then
+                    if handleTouch(x, y) then
+                        drawScreen()
+                    end
+                end
+            end
+            
+        elseif event == "rednet_message" then
+            local sender_id, message, proto = param1, param2, param3
+            if proto == protocol then
+                handleMessage(message)
+            end
+            
+        elseif event == "timer" then
+            local timer_id = param1
+            if timer_id == heartbeat_timer then
+                sendHeartbeat()
+                heartbeat_timer = os.startTimer(config.heartbeat_interval)
+                
+                if is_terminal then
+                    terminal_features.connection_strength = math.max(0, terminal_features.connection_strength - 1)
+                end
+            elseif timer_id == alarm_timer then
+                if warning_active and (not is_terminal or speaker) then
+                    local pattern = alarm_patterns[current_alarm_type]
+                    local volume = config.base_volume + (config.volume_increment * math.min(30, (os.time() - (alarm_start_time or 0))))
+                    volume = math.min(config.max_volume, volume)
+                    
+                    if speaker and pattern[alarm_note_index] then
+                        local sound = pattern[alarm_note_index]
+                        speaker.playNote("bass", volume, sound.note)
+                        
+                        alarm_note_index = alarm_note_index + 1
+                        if alarm_note_index > #pattern then
+                            alarm_note_index = 1
+                        end
+                        
+                        local next_delay = math.max(sound.duration, 0.1)
+                        alarm_timer = os.startTimer(next_delay)
+                    else
+                        alarm_timer = os.startTimer(0.2)
+                        alarm_note_index = 1
+                    end
+                    
+                    if alarm_start_time and (os.time() - alarm_start_time) > config.auto_stop_timeout then
+                        log("Auto-stopping alarm due to timeout")
+                        stopAlarm()
+                        alarm_timer = nil
+                    end
+                else
+                    alarm_timer = nil
+                end
+            end
+        end
+        
+        -- Start alarm timer when needed
+        if warning_active and not alarm_timer and (not is_terminal or speaker) then
+            alarm_timer = os.startTimer(0.05)
+        end
+    end
+end
+
+main()Screen()
+end
+
+local function changeName()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== Change Device Name ===")
+    print("Current name: " .. getDisplayName())
+    print("Computer ID: " .. computer_id)
+    print("")
+    print("Enter new name (or press Enter to clear):")
+    
+    local new_name = read()
+    
+    if new_name == "" then
+        setCustomName(nil)
+        print("Custom name cleared. Using default: " .. getDisplayName())
+    else
+        if setCustomName(new_name) then
+            print("Name changed to: " .. getDisplayName())
+        else
+            print("Failed to set name")
+        end
+    end
+    
+    print("\nPress any key to return...")
+    os.pullEvent("key")
+    draw
