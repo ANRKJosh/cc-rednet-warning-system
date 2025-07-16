@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (we keep trying)
+-- Enhanced PoggishTown Warning System (actually version 33 apparently)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -56,8 +56,65 @@ local config = {
     -- Background update checking
     background_update_check = true,  -- Enable background update checking
     update_check_interval = 300,     -- 5 minutes between background checks
-    auto_apply_updates = false       -- Only auto-apply on computers, not terminals
+    auto_apply_updates = false,      -- Only auto-apply on computers, not terminals
+    -- Custom naming
+    allow_custom_names = true,       -- Allow custom device names
+    custom_name = nil               -- Custom name (will be set if configured)
 }
+
+-- Get display name for this device
+local function getDisplayName()
+    if config.custom_name then
+        return config.custom_name
+    end
+    
+    -- Check if computer has a label
+    local label = os.getComputerLabel()
+    if label then
+        return label
+    end
+    
+    -- Default to ID
+    return tostring(computer_id)
+end
+
+-- Set custom name
+local function setCustomName(name)
+    if not config.allow_custom_names then return false end
+    
+    if name and name ~= "" then
+        config.custom_name = name
+        -- Save to file
+        local file = fs.open("poggish_config", "w")
+        if file then
+            file.write(textutils.serialize({custom_name = name}))
+            file.close()
+        end
+        return true
+    else
+        config.custom_name = nil
+        -- Remove config file
+        if fs.exists("poggish_config") then
+            fs.delete("poggish_config")
+        end
+        return true
+    end
+end
+
+-- Load custom name from file
+local function loadCustomName()
+    if fs.exists("poggish_config") then
+        local file = fs.open("poggish_config", "r")
+        if file then
+            local content = file.readAll()
+            file.close()
+            local success, data = pcall(textutils.unserialize, content)
+            if success and data and data.custom_name then
+                config.custom_name = data.custom_name
+            end
+        end
+    end
+end
 
 -- Network state tracking
 local network_nodes = {}
@@ -194,8 +251,9 @@ local function terminalNotify(message, urgent)
     
     terminalLog(message)
     
-    -- Update connection strength based on network activity
-    terminal_features.connection_strength = math.min(5, terminal_features.connection_strength + 1)
+    -- Don't increment connection strength for local actions
+    -- Only increment for actual network messages received
+    -- terminal_features.connection_strength = math.min(5, terminal_features.connection_strength + 1)
 end
 
 -- Get active node count (must be defined before drawScreen)
@@ -217,13 +275,30 @@ local function drawScreen()
     term.setTextColor(colors.white)
     term.setBackgroundColor(colors.black)
     
+-- Draw enhanced status UI with terminal-optimized layout
+local function drawScreen()
+    term.clear()
+    term.setCursorPos(1, 1)
+    term.setTextColor(colors.white)
+    term.setBackgroundColor(colors.black)
+    
     if is_terminal then
         -- Compact terminal layout - ensure clean title display
+        term.clear() -- Extra clear to ensure clean state
+        term.setCursorPos(1, 1)
         term.setTextColor(colors.white)
         term.setBackgroundColor(colors.black)
-        print("=============================")
-        print("= POGGISHTOWN ALERT TERM   =")
-        print("=============================")
+        
+        -- Print title as individual characters to avoid wrapping issues
+        local title_lines = {
+            "=============================",
+            "= POGGISHTOWN ALERT TERM   =", 
+            "============================="
+        }
+        
+        for _, line in ipairs(title_lines) do
+            print(line)
+        end
         
         -- Show silent mode right after title if enabled
         if terminal_features and terminal_features.silent_mode then
@@ -236,7 +311,7 @@ local function drawScreen()
         end
         
         -- Device info (compact)
-        print("ID: " .. computer_id .. " | Nodes: " .. getActiveNodeCount())
+        print("Name: " .. getDisplayName() .. " | Nodes: " .. getActiveNodeCount())
         print("") -- Add blank line
         
         -- Status (compact)
@@ -271,7 +346,8 @@ local function drawScreen()
         print("G - General | E - Evacuation")
         print("C - Cancel  | S - Status")
         print("U - Update  | I - Terminal Info")
-        print("M - Silent Mode | Q - Quit")
+        print("N - Change Name | M - Silent Mode")
+        print("Q - Quit")
         
         -- Show update indicator for terminals
         if update_available then
@@ -285,8 +361,8 @@ local function drawScreen()
         local coords = terminal_features and terminal_features.last_gps_coords or nil
         local signal_strength = terminal_features and terminal_features.connection_strength or 0
         
-        -- Only show status section if we have GPS coordinates OR signal strength > 1
-        if coords or signal_strength > 1 then
+        -- Only show status section if we have GPS coordinates OR meaningful network signal (3+)
+        if coords or signal_strength >= 3 then
             print("")
             term.setTextColor(colors.cyan)
             
@@ -295,8 +371,8 @@ local function drawScreen()
                 print("GPS: " .. coords.x .. "," .. coords.y .. "," .. coords.z)
             end
             
-            -- Only show signal if we have meaningful signal (more than just 1 bar)
-            if signal_strength > 1 then
+            -- Only show signal if we have strong signal (3+ bars from actual network activity)
+            if signal_strength >= 3 then
                 print("Signal: " .. string.rep("▐", signal_strength) .. string.rep("▁", 5 - signal_strength))
             end
             
@@ -311,7 +387,7 @@ local function drawScreen()
         print("")
         
         -- Computer info
-        print("ID: " .. computer_id .. " | Nodes: " .. getActiveNodeCount())
+        print("Name: " .. getDisplayName() .. " | Nodes: " .. getActiveNodeCount())
         print("")
         
         -- Status with consistent positioning
@@ -360,7 +436,8 @@ local function drawScreen()
         print("Any key - General alarm")
         print("E - Evacuation alarm")
         print("C - Cancel alarm")
-        print("S - Status | L - Logs | T - Test | U - Update")
+        print("S - Status | L - Logs | T - Test")
+        print("U - Update | N - Change Name")
         
         -- Show update indicator
         if update_available then
@@ -704,6 +781,7 @@ local function sendHeartbeat()
         message_id = generateMessageId(),
         hops = 0,
         device_type = is_terminal and "terminal" or "computer",
+        display_name = getDisplayName(), -- Include display name
         -- Include current alarm status for new computers
         alarm_active = warning_active,
         alarm_type = current_alarm_type,
@@ -768,6 +846,7 @@ local function showStatus()
     term.setCursorPos(1, 1)
     print("=== System Status ===")
     print("Device Type: " .. (is_terminal and "Terminal" or "Computer"))
+    print("Display Name: " .. getDisplayName())
     print("Computer ID: " .. computer_id)
     print("Relay Mode: " .. (config.enable_relay and "ENABLED" or "DISABLED"))
     print("Max Hops: " .. config.max_hops)
@@ -784,10 +863,39 @@ local function showStatus()
     for id, node in pairs(network_nodes) do
         local status = (current_time - node.last_seen) <= config.max_offline_time and "ONLINE" or "OFFLINE"
         local hop_info = node.hops and (" (via " .. node.hops .. " hops)") or ""
-        print("  Computer " .. id .. ": " .. status .. hop_info .. " (last seen: " .. math.floor(current_time - node.last_seen) .. "s ago)")
+        local name_info = node.display_name and (" [" .. node.display_name .. "]") or ""
+        print("  Computer " .. id .. name_info .. ": " .. status .. hop_info .. " (last seen: " .. math.floor(current_time - node.last_seen) .. "s ago)")
     end
     
     print("\nMessage History: " .. #message_history .. " recent messages")
+    
+    print("\nPress any key to return...")
+    os.pullEvent("key")
+    drawScreen()
+end
+
+-- Change device name
+local function changeName()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== Change Device Name ===")
+    print("Current name: " .. getDisplayName())
+    print("Computer ID: " .. computer_id)
+    print("")
+    print("Enter new name (or press Enter to clear custom name):")
+    
+    local new_name = read()
+    
+    if new_name == "" then
+        setCustomName(nil)
+        print("Custom name cleared. Using default: " .. getDisplayName())
+    else
+        if setCustomName(new_name) then
+            print("Name changed to: " .. getDisplayName())
+        else
+            print("Failed to set name (custom names disabled)")
+        end
+    end
     
     print("\nPress any key to return...")
     os.pullEvent("key")
@@ -957,7 +1065,8 @@ local function handleMessage(msg)
             last_seen = os.time(),
             computer_id = msg.computer_id,
             hops = msg.hops or 0,
-            device_type = msg.device_type or "computer"
+            device_type = msg.device_type or "computer",
+            display_name = msg.display_name or tostring(msg.computer_id)
         }
         
         -- New computer joining during active alarm - sync alarm state
@@ -979,9 +1088,9 @@ local function handleMessage(msg)
             drawScreen()
         end
         
-        -- Update connection strength for terminals
+        -- Update connection strength for terminals when receiving actual network messages
         if is_terminal then
-            terminal_features.connection_strength = math.min(5, math.max(1, terminal_features.connection_strength))
+            terminal_features.connection_strength = math.min(5, terminal_features.connection_strength + 1)
         end
         
         -- Only update screen if we're on the main screen
@@ -993,6 +1102,9 @@ end
 
 -- Modem check and initialization
 local function init()
+    -- Load custom name first
+    loadCustomName()
+    
     -- Check if we're on a terminal first
     if is_terminal then
         print("Running on wireless terminal")
@@ -1125,6 +1237,9 @@ local function main()
             elseif keyCode == keys.u then
                 checkForUpdates(true) -- true = manual mode
                 drawScreen()
+            elseif keyCode == keys.n then
+                -- N key for changing name
+                changeName()
             elseif keyCode == keys.g and is_terminal then
                 -- G key for general alarm on terminals
                 startAlarm("general")
