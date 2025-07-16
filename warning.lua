@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System -v3 (Rednet Debugging)
+-- Enhanced PoggishTown Warning System - v3 more debug
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -489,20 +489,25 @@ end
 -- Input handler function
 local function handleInput()
     while true do
-        local _, keyCode = os.pullEvent("key")
-        if keyCode == keys.c then
-            stopAlarm()
-        elseif keyCode == keys.e then
-            startAlarm("evacuation")
-        elseif keyCode == keys.s then
-            showStatus()
-        elseif keyCode == keys.l then
-            showLogs()
-        elseif keyCode == keys.t then
-            testNetwork()
-        elseif not warning_active then
-            -- Any other key starts general alarm
-            startAlarm("general")
+        local success, err = pcall(function()
+            local _, keyCode = os.pullEvent("key")
+            if keyCode == keys.c then
+                stopAlarm()
+            elseif keyCode == keys.e then
+                startAlarm("evacuation")
+            elseif keyCode == keys.s then
+                showStatus()
+            elseif keyCode == keys.l then
+                showLogs()
+            elseif keyCode == keys.t then
+                testNetwork()
+            elseif not warning_active then
+                -- Any other key starts general alarm
+                startAlarm("general")
+            end
+        end)
+        if not success then
+            log("Input handler error: " .. err)
         end
     end
 end
@@ -510,11 +515,16 @@ end
 -- Network handler function
 local function handleNetwork()
     while true do
-        local _, _, _, _, msg, proto = os.pullEvent("rednet_message")
-        if proto == protocol then
-            -- Debug: Log all received messages
-            log("Raw message received: " .. textutils.serialize(msg))
-            handleMessage(msg)
+        local success, err = pcall(function()
+            local _, _, _, _, msg, proto = os.pullEvent("rednet_message")
+            if proto == protocol then
+                -- Debug: Log all received messages
+                log("Raw message received: " .. textutils.serialize(msg))
+                handleMessage(msg)
+            end
+        end)
+        if not success then
+            log("Network handler error: " .. err)
         end
     end
 end
@@ -522,10 +532,16 @@ end
 -- Alarm sound handler function
 local function handleAlarm()
     while true do
-        if warning_active then
-            playAlarm()
-        else
-            sleep(0.1)
+        local success, err = pcall(function()
+            if warning_active then
+                playAlarm()
+            else
+                sleep(0.1)
+            end
+        end)
+        if not success then
+            log("Alarm handler error: " .. err)
+            sleep(1) -- Prevent rapid error spam
         end
     end
 end
@@ -533,8 +549,13 @@ end
 -- Heartbeat handler function
 local function handleHeartbeat()
     while true do
-        sleep(config.heartbeat_interval)
-        sendHeartbeat()
+        local success, err = pcall(function()
+            sleep(config.heartbeat_interval)
+            sendHeartbeat()
+        end)
+        if not success then
+            log("Heartbeat handler error: " .. err)
+        end
     end
 end
 
@@ -542,13 +563,30 @@ end
 local function main()
     init()
     drawScreen()
+    
+    log("Starting all handlers...")
+    print("Starting parallel handlers...")
+    print("Press any key to continue...")
+    os.pullEvent("key")
 
     -- Run all handlers in parallel
     parallel.waitForAll(
-        handleInput,
-        handleNetwork,
-        handleAlarm,
-        handleHeartbeat
+        function()
+            log("Input handler started")
+            handleInput()
+        end,
+        function()
+            log("Network handler started")
+            handleNetwork()
+        end,
+        function()
+            log("Alarm handler started")
+            handleAlarm()
+        end,
+        function()
+            log("Heartbeat handler started")
+            handleHeartbeat()
+        end
     )
 end
 
