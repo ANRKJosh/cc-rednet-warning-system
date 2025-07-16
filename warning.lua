@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (we fix again)
+-- Enhanced PoggishTown Warning System (louder, we're an alarm after all...)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -14,14 +14,13 @@ local config = {
     heartbeat_interval = 30,    -- seconds between heartbeats
     max_offline_time = 90,      -- seconds before marking node as offline
     auto_stop_timeout = 300,    -- seconds to auto-stop alarm (5 minutes)
-    volume_increment = 0.2,     -- Increased from 0.1
-    max_volume = 10.0,          -- Increased from 5.0 - very loud!
-    base_volume = 2.0,          -- Increased from 1.0
+    volume_increment = 0.3,     -- Increased from 0.2
+    max_volume = 15.0,          -- Increased from 10.0 - very very loud!
+    base_volume = 3.0,          -- Increased from 2.0
     enable_relay = true,        -- enable message relaying
     max_hops = 3,              -- Reduced from 8 - ender modems have infinite range
     relay_delay = 0.2,         -- Increased from 0.05 to reduce spam
-    update_url = "https://raw.githubusercontent.com/ANRKJosh/cc-rednet-warning-system/refs/heads/main/warning.lua",
-    use_ender_modems = false   -- Set to true if using ender modems
+    update_url = "https://raw.githubusercontent.com/ANRKJosh/cc-rednet-warning-system/refs/heads/main/warning.lua"
 }
 
 -- Network state tracking
@@ -30,6 +29,7 @@ local last_heartbeat = 0
 local computer_id = os.getComputerID()
 local alarm_triggered_by = nil
 local message_history = {}  -- Track recent messages to prevent loops
+local alarm_note_index = 1  -- Track which note we're currently playing
 
 -- Alarm patterns (different sounds for different alert types)
 local alarm_patterns = {
@@ -133,6 +133,17 @@ local function markMessageSeen(msg_id)
     end
 end
 
+-- Check if this computer has an ender modem
+local function hasEnderModem()
+    local modem = peripheral.wrap(modem_side)
+    if modem then
+        -- Ender modems are wireless but don't have the isWireless() method
+        -- or they return false for isWireless() despite being wireless-capable
+        return modem.isWireless and not modem.isWireless()
+    end
+    return false
+end
+
 -- Relay message to other nodes
 local function relayMessage(msg)
     if not config.enable_relay then return end
@@ -146,8 +157,7 @@ local function relayMessage(msg)
     if msg.message_id and isMessageSeen(msg.message_id) then return end
     
     -- Check if we're using ender modems - if so, be more conservative with relaying
-    local modem = peripheral.wrap(modem_side)
-    if modem and modem.isWireless and not modem.isWireless() then
+    if hasEnderModem() then
         -- This is an ender modem - reduce relaying since range is infinite
         if msg.hops > 1 then return end -- Only relay once for ender modems
     end
@@ -340,6 +350,7 @@ local function startAlarm(alarm_type)
         current_alarm_type = alarm_type
         alarm_start_time = os.time()
         alarm_triggered_by = computer_id
+        alarm_note_index = 1  -- Reset note index
         redstone.setOutput(redstone_output_side, true)
         drawScreen()
         broadcast("start", alarm_type, computer_id)
@@ -351,6 +362,7 @@ end
 local function stopAlarm()
     if warning_active then
         warning_active = false
+        alarm_note_index = 1  -- Reset note index
         redstone.setOutput(redstone_output_side, false)
         drawScreen()
         broadcast("stop", current_alarm_type, computer_id)
@@ -544,6 +556,7 @@ local function handleMessage(msg)
             current_alarm_type = msg.alarm_type or "general"
             alarm_start_time = msg.alarm_start_time or os.time()
             alarm_triggered_by = msg.alarm_triggered_by
+            alarm_note_index = 1  -- Start from beginning of pattern
             redstone.setOutput(redstone_output_side, true)
             drawScreen()
         end
@@ -583,11 +596,12 @@ local function init()
     -- Check what type of modem we have
     local modem = peripheral.wrap(modem_side)
     if modem.isWireless then
-        print("Wireless modem detected")
         if modem.isWireless() then
-            print("Wireless functionality confirmed")
+            print("Regular wireless modem detected")
+            print("Range: 64 blocks, relaying enabled")
         else
-            print("ERROR: Modem not in wireless mode!")
+            print("Ender modem detected (infinite range)")
+            print("Relay settings optimized for ender modems")
         end
     else
         print("Ender modem detected (infinite range)")
@@ -657,22 +671,29 @@ local function main()
                 sendHeartbeat()
                 heartbeat_timer = os.startTimer(config.heartbeat_interval)
             elseif timer_id == alarm_timer then
-                -- Time to play next alarm cycle
+                -- Time to play next alarm note
                 if warning_active then
-                    -- Play alarm pattern continuously without blocking
                     local pattern = alarm_patterns[current_alarm_type]
                     local volume = config.base_volume + (config.volume_increment * math.min(30, (os.time() - (alarm_start_time or 0))))
                     volume = math.min(config.max_volume, volume)
                     
-                    -- Play all notes in the pattern quickly
-                    for _, sound in ipairs(pattern) do
-                        if warning_active and speaker then
-                            speaker.playNote("bass", volume, sound.note)
+                    -- Play current note
+                    if speaker and pattern[alarm_note_index] then
+                        local sound = pattern[alarm_note_index]
+                        speaker.playNote("bass", volume, sound.note)
+                        
+                        -- Move to next note
+                        alarm_note_index = alarm_note_index + 1
+                        if alarm_note_index > #pattern then
+                            alarm_note_index = 1  -- Loop back to start
                         end
+                        
+                        -- Set timer for next note based on current note's duration
+                        alarm_timer = os.startTimer(sound.duration)
+                    else
+                        -- Fallback timer if something goes wrong
+                        alarm_timer = os.startTimer(0.2)
                     end
-                    
-                    -- Set next alarm cycle
-                    alarm_timer = os.startTimer(0.8) -- Play alarm every 0.8 seconds for continuous sound
                     
                     -- Check for auto-timeout
                     if alarm_start_time and (os.time() - alarm_start_time) > config.auto_stop_timeout then
