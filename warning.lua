@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (pleaes please please please please)
+-- Enhanced PoggishTown Warning System (PLEASEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -1345,4 +1345,5 @@ local function main()
     end
 end
 
+-- Start the main program
 main()
