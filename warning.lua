@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (cleaner edition)
+-- Enhanced PoggishTown Warning System (errors happening again...)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -198,6 +198,18 @@ local function terminalNotify(message, urgent)
     terminal_features.connection_strength = math.min(5, terminal_features.connection_strength + 1)
 end
 
+-- Get active node count (must be defined before drawScreen)
+local function getActiveNodeCount()
+    local count = 0
+    local current_time = os.time()
+    for id, node in pairs(network_nodes) do
+        if (current_time - node.last_seen) <= config.max_offline_time then
+            count = count + 1
+        end
+    end
+    return count
+end
+
 -- Draw enhanced status UI with terminal-optimized layout
 local function drawScreen()
     term.clear()
@@ -206,7 +218,7 @@ local function drawScreen()
     term.setBackgroundColor(colors.black)
     
     if is_terminal then
-        -- Compact terminal layout
+        -- Compact terminal layout - fix the title display
         print("=============================")
         print("= POGGISHTOWN ALERT TERM   =")
         print("=============================")
@@ -216,9 +228,10 @@ local function drawScreen()
             term.setTextColor(colors.orange)
             print("         SILENT MODE")
             term.setTextColor(colors.white)
+            print("") -- Add blank line after silent mode
+        else
+            print("") -- Add blank line after title
         end
-        
-        print("") -- Add blank line
         
         -- Device info (compact)
         print("ID: " .. computer_id .. " | Nodes: " .. getActiveNodeCount())
@@ -266,21 +279,22 @@ local function drawScreen()
             term.setTextColor(colors.white)
         end
         
-        -- Terminal-specific status (only show if we have info)
+        -- Terminal-specific status (only show if we have actual GPS coordinates OR good signal)
         local coords = terminal_features and terminal_features.last_gps_coords or nil
-        local show_status = coords or (terminal_features and terminal_features.connection_strength > 0)
+        local has_signal = terminal_features and terminal_features.connection_strength > 0
         
-        if show_status then
+        -- Only show status section if we have GPS coordinates or a signal
+        if coords or has_signal then
             print("")
             term.setTextColor(colors.cyan)
             
-            -- Only show GPS if we have coordinates
+            -- Only show GPS if we actually have coordinates
             if coords then
                 print("GPS: " .. coords.x .. "," .. coords.y .. "," .. coords.z)
             end
             
-            -- Show signal strength
-            if terminal_features then
+            -- Only show signal if we have any
+            if has_signal and terminal_features then
                 print("Signal: " .. string.rep("▐", terminal_features.connection_strength) .. string.rep("▁", 5 - terminal_features.connection_strength))
             end
             
