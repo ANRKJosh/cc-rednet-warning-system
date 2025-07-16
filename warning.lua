@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System ROBUST
+-- Enhanced PoggishTown Warning System (works with wireless terminals better)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -8,6 +8,37 @@ local modem_side = nil
 local speaker = peripheral.find("speaker")
 local alarm_start_time = nil
 local redstone_output_side = "back"
+
+-- Check if we're running on a wireless terminal
+local function isWirelessTerminal()
+    -- Check if we have pocket computer API
+    if pocket then
+        return true
+    end
+    
+    -- Check computer label for terminal indicators
+    local label = os.getComputerLabel()
+    if label and (string.find(label:lower(), "terminal") or string.find(label:lower(), "pocket")) then
+        return true
+    end
+    
+    -- Check if we have no attached peripherals (common for terminals)
+    local peripherals = peripheral.getNames()
+    if #peripherals == 0 then
+        return true
+    end
+    
+    -- Check if we only have built-in modem (terminals often have built-in wireless)
+    local has_only_modem = true
+    for _, side in pairs(peripherals) do
+        if peripheral.getType(side) ~= "modem" then
+            has_only_modem = false
+            break
+        end
+    end
+    
+    return has_only_modem and #peripherals == 1
+end
 
 -- Configuration
 local config = {
@@ -20,6 +51,7 @@ local config = {
     enable_relay = true,        -- enable message relaying
     max_hops = 3,              -- Reduced from 8 - ender modems have infinite range
     relay_delay = 0.2,         -- Increased from 0.05 to reduce spam
+    -- Single update URL - program adapts based on device type
     update_url = "https://raw.githubusercontent.com/ANRKJosh/cc-rednet-warning-system/refs/heads/main/warning.lua"
 }
 
@@ -30,6 +62,7 @@ local computer_id = os.getComputerID()
 local alarm_triggered_by = nil
 local message_history = {}  -- Track recent messages to prevent loops
 local alarm_note_index = 1  -- Track which note we're currently playing
+local is_terminal = isWirelessTerminal()
 
 -- Alarm patterns (different sounds for different alert types)
 local alarm_patterns = {
@@ -54,7 +87,8 @@ local max_log_size = 10000  -- Max log file size in bytes
 
 local function log(message)
     local timestamp = textutils.formatTime(os.time(), true)
-    local entry = "[" .. timestamp .. "] " .. message .. "\n"
+    local device_type = is_terminal and "[TERMINAL]" or "[COMPUTER]"
+    local entry = "[" .. timestamp .. "] " .. device_type .. " " .. message .. "\n"
     
     -- Check if log file is too large and rotate it
     if fs.exists(log_file) and fs.getSize(log_file) > max_log_size then
@@ -92,6 +126,11 @@ end
 -- Play alarm with current pattern (non-blocking version)
 local function playAlarmStep()
     if not warning_active then return end
+    
+    -- Skip audio on terminals unless they specifically have speakers
+    if is_terminal and not speaker then
+        return
+    end
     
     local pattern = alarm_patterns[current_alarm_type]
     local volume = config.base_volume + (config.volume_increment * math.min(30, (os.time() - (alarm_start_time or 0))))
@@ -191,11 +230,16 @@ local function relayMessage(msg)
     end
 end
 
--- Format time string
 -- Auto-update system
 local function checkForUpdates(auto_mode)
+    -- Different file names for different device types
+    local filename = is_terminal and "pogalert" or "startup"
+    
     if not auto_mode then
         print("Checking for updates...")
+        print("Device type: " .. (is_terminal and "Terminal" or "Computer"))
+        print("File: " .. filename)
+        print("Update URL: " .. config.update_url)
     end
     
     local request = http.get(config.update_url)
@@ -205,8 +249,8 @@ local function checkForUpdates(auto_mode)
         
         -- Read current file
         local current_content = ""
-        if fs.exists("startup") then
-            local file = fs.open("startup", "r")
+        if fs.exists(filename) then
+            local file = fs.open(filename, "r")
             if file then
                 current_content = file.readAll()
                 file.close()
@@ -217,26 +261,38 @@ local function checkForUpdates(auto_mode)
         if remote_content ~= current_content then
             if auto_mode then
                 print("Auto-update: New version found! Downloading...")
-                log("Auto-update: Downloading new version")
+                log("Auto-update: Downloading new version to " .. filename)
             else
                 print("Update available! Downloading...")
             end
             
-            local file = fs.open("startup", "w")
+            local file = fs.open(filename, "w")
             if file then
                 file.write(remote_content)
                 file.close()
                 
                 if auto_mode then
-                    print("Auto-update: Update downloaded! Restarting in 3 seconds...")
-                    log("Auto-update: Update downloaded, restarting")
-                    sleep(3)
-                    os.reboot()
+                    if is_terminal then
+                        print("Terminal alert system updated!")
+                        print("Restart this program to apply changes.")
+                        log("Auto-update: Update downloaded to " .. filename)
+                        sleep(2)
+                    else
+                        print("Auto-update: Update downloaded! Restarting in 3 seconds...")
+                        log("Auto-update: Update downloaded, restarting")
+                        sleep(3)
+                        os.reboot()
+                    end
                 else
-                    print("Update downloaded! Restart to apply changes.")
-                    print("Press U to restart now, or any other key to continue...")
+                    print("Update downloaded!")
+                    if is_terminal then
+                        print("Restart this program to apply changes.")
+                        print("Press any key to continue...")
+                    else
+                        print("Press U to restart now, or any other key to continue...")
+                    end
                     local _, key = os.pullEvent("key")
-                    if key == keys.u then
+                    if key == keys.u and not is_terminal then
                         print("Restarting...")
                         os.reboot()
                     end
@@ -271,55 +327,138 @@ local function getActiveNodeCount()
     return count
 end
 
--- Draw enhanced status UI
+-- Draw enhanced status UI with terminal-optimized layout
 local function drawScreen()
     term.clear()
     term.setCursorPos(1, 1)
-    print("===============================")
-    print("= PoggishTown Warning System  =")
-    print("===============================")
     
-    -- Computer info
-    term.setCursorPos(1, 4)
-    print("ID: " .. computer_id .. " | Nodes: " .. getActiveNodeCount())
-    
-    -- Status
-    term.setCursorPos(1, 6)
-    if warning_active then
-        term.setTextColor(colors.red)
-        print("STATUS: !! WARNING ACTIVE !!")
-        term.setTextColor(colors.yellow)
-        print("Type: " .. string.upper(current_alarm_type))
-        term.setTextColor(colors.white)
-        if alarm_start_time then
-            local t = textutils.formatTime(alarm_start_time, true)
-            print("Started: " .. t)
-        end
-        if alarm_triggered_by then
-            print("By: Computer " .. alarm_triggered_by)
+    if is_terminal then
+        -- Compact terminal layout
+        print("=============================")
+        print("= POGGISHTOWN ALERT TERM   =")
+        print("=============================")
+        
+        -- Device info (compact)
+        term.setCursorPos(1, 4)
+        print("ID: " .. computer_id .. " | Nodes: " .. getActiveNodeCount())
+        
+        -- Status (compact)
+        term.setCursorPos(1, 6)
+        if warning_active then
+            term.setTextColor(colors.red)
+            print("ALERT: " .. string.upper(current_alarm_type))
+            term.setTextColor(colors.white)
+            if alarm_start_time then
+                local t = textutils.formatTime(alarm_start_time, true)
+                print("Start: " .. t)
+            end
+            if alarm_triggered_by then
+                print("By: #" .. alarm_triggered_by)
+            end
+            
+            -- Auto-stop countdown
+            if alarm_start_time then
+                local elapsed = os.time() - alarm_start_time
+                local remaining = config.auto_stop_timeout - elapsed
+                if remaining > 0 then
+                    print("Stop: " .. math.floor(remaining) .. "s")
+                end
+            end
+        else
+            term.setTextColor(colors.green)
+            print("STATUS: Ready")
         end
         
-        -- Auto-stop countdown
-        if alarm_start_time then
-            local elapsed = os.time() - alarm_start_time
-            local remaining = config.auto_stop_timeout - elapsed
-            if remaining > 0 then
-                print("Auto-stop: " .. math.floor(remaining) .. "s")
-            end
+        term.setTextColor(colors.white)
+        term.setCursorPos(1, 14)
+        print("Terminal Controls:")
+        print("G - General | E - Evacuation")
+        print("C - Cancel  | S - Status")
+        print("U - Update  | I - Terminal Info")
+        print("M - Silent Mode | Q - Quit")
+        
+        -- Terminal-specific status
+        term.setCursorPos(1, 20)
+        term.setTextColor(colors.cyan)
+        
+        -- Battery indicator
+        local battery = checkBattery()
+        if battery then
+            local bat_color = battery < 10 and colors.red or battery < 30 and colors.yellow or colors.green
+            term.setTextColor(bat_color)
+            print("Bat: " .. battery .. "%")
+        else
+            print("Bat: OK")
         end
+        
+        -- GPS and other status
+        term.setTextColor(colors.cyan)
+        local coords = terminal_features.last_gps_coords
+        if coords then
+            print("GPS: " .. coords.x .. "," .. coords.y .. "," .. coords.z)
+        else
+            print("GPS: Searching...")
+        end
+        
+        print("Signal: " .. string.rep("▐", terminal_features.connection_strength) .. string.rep("▁", 5 - terminal_features.connection_strength))
+        
+        if terminal_features.silent_mode then
+            term.setTextColor(colors.orange)
+            print("SILENT MODE")
+        end
+        
+        term.setTextColor(colors.white)
     else
-        term.setTextColor(colors.green)
-        print("STATUS: System Ready")
+        -- Full computer layout
+        print("===============================")
+        print("= PoggishTown Warning System  =")
+        print("===============================")
+        
+        -- Computer info
+        term.setCursorPos(1, 4)
+        print("ID: " .. computer_id .. " | Nodes: " .. getActiveNodeCount())
+        
+        -- Status
+        term.setCursorPos(1, 6)
+        if warning_active then
+            term.setTextColor(colors.red)
+            print("STATUS: !! WARNING ACTIVE !!")
+            term.setTextColor(colors.yellow)
+            print("Type: " .. string.upper(current_alarm_type))
+            term.setTextColor(colors.white)
+            if alarm_start_time then
+                local t = textutils.formatTime(alarm_start_time, true)
+                print("Started: " .. t)
+            end
+            if alarm_triggered_by then
+                print("By: Computer " .. alarm_triggered_by)
+            end
+            
+            -- Auto-stop countdown
+            if alarm_start_time then
+                local elapsed = os.time() - alarm_start_time
+                local remaining = config.auto_stop_timeout - elapsed
+                if remaining > 0 then
+                    print("Auto-stop: " .. math.floor(remaining) .. "s")
+                end
+            end
+        else
+            term.setTextColor(colors.green)
+            print("STATUS: System Ready")
+        end
+        
+        term.setTextColor(colors.white)
+        term.setCursorPos(1, 16)
+        print("Controls:")
+        print("Any key - General alarm")
+        print("E - Evacuation alarm")
+        print("C - Cancel alarm")
+        print("S - Status | L - Logs | T - Test | U - Update")
     end
-    
-    term.setTextColor(colors.white)
-    term.setCursorPos(1, 14)
-    print("Controls:")
-    print("Any key - General alarm")
-    print("E - Evacuation alarm")
-    print("C - Cancel alarm")
-    print("S - Status | L - Logs | T - Test | U - Update")
 end
+
+-- Rest of your existing functions (broadcast, sendHeartbeat, startAlarm, stopAlarm, etc.)
+-- would go here unchanged...
 
 -- Broadcast over network with source ID and relay support
 local function broadcast(action, alarm_type, source_id)
@@ -331,7 +470,8 @@ local function broadcast(action, alarm_type, source_id)
         origin_id = computer_id,  -- Original sender
         timestamp = os.time(),
         message_id = generateMessageId(),
-        hops = 0
+        hops = 0,
+        device_type = is_terminal and "terminal" or "computer"
     }
     rednet.broadcast(message, protocol)
     markMessageSeen(message.message_id)
@@ -347,6 +487,7 @@ local function sendHeartbeat()
         timestamp = os.time(),
         message_id = generateMessageId(),
         hops = 0,
+        device_type = is_terminal and "terminal" or "computer",
         -- Include current alarm status for new computers
         alarm_active = warning_active,
         alarm_type = current_alarm_type,
@@ -357,7 +498,7 @@ local function sendHeartbeat()
     markMessageSeen(message.message_id)
 end
 
--- Start the alarm with type
+-- Start alarm
 local function startAlarm(alarm_type)
     alarm_type = alarm_type or "general"
     if not warning_active then
@@ -366,10 +507,21 @@ local function startAlarm(alarm_type)
         alarm_start_time = os.time()
         alarm_triggered_by = computer_id
         alarm_note_index = 1  -- Reset note index
-        redstone.setOutput(redstone_output_side, true)
+        
+        -- Only set redstone output if we're not a terminal
+        if not is_terminal then
+            redstone.setOutput(redstone_output_side, true)
+        else
+            -- Terminal-specific alarm behavior
+            terminalNotify("ALARM TRIGGERED: " .. string.upper(alarm_type), true)
+            if not terminal_features.silent_mode then
+                terminalVibrate()
+            end
+        end
+        
         drawScreen()
         broadcast("start", alarm_type, computer_id)
-        log("Alarm started: " .. alarm_type .. " by computer " .. computer_id)
+        log("Alarm started: " .. alarm_type .. " by " .. (is_terminal and "terminal" or "computer") .. " " .. computer_id)
     end
 end
 
@@ -378,10 +530,18 @@ local function stopAlarm()
     if warning_active then
         warning_active = false
         alarm_note_index = 1  -- Reset note index
-        redstone.setOutput(redstone_output_side, false)
+        
+        -- Only control redstone if we're not a terminal
+        if not is_terminal then
+            redstone.setOutput(redstone_output_side, false)
+        else
+            -- Terminal-specific stop behavior
+            terminalNotify("ALARM CANCELLED", false)
+        end
+        
         drawScreen()
         broadcast("stop", current_alarm_type, computer_id)
-        log("Alarm stopped by computer " .. computer_id)
+        log("Alarm stopped by " .. (is_terminal and "terminal" or "computer") .. " " .. computer_id)
         alarm_triggered_by = nil
     end
 end
@@ -391,9 +551,12 @@ local function showStatus()
     term.clear()
     term.setCursorPos(1, 1)
     print("=== System Status ===")
+    print("Device Type: " .. (is_terminal and "Terminal" or "Computer"))
     print("Computer ID: " .. computer_id)
     print("Relay Mode: " .. (config.enable_relay and "ENABLED" or "DISABLED"))
     print("Max Hops: " .. config.max_hops)
+    print("Audio: " .. (speaker and "Available" or "Not Available"))
+    print("Redstone: " .. (is_terminal and "Disabled (Terminal)" or "Enabled"))
     print("Alarm Active: " .. tostring(warning_active))
     if warning_active then
         print("Alarm Type: " .. current_alarm_type)
@@ -420,13 +583,14 @@ local function testNetwork()
     term.clear()
     term.setCursorPos(1, 1)
     print("=== Network Test ===")
+    print("Device Type: " .. (is_terminal and "Terminal" or "Computer"))
     print("Computer ID: " .. computer_id)
     print("Protocol: " .. protocol)
     print("Modem side: " .. modem_side)
     
     -- Check modem type
     local modem = peripheral.wrap(modem_side)
-    if modem.isWireless then
+    if modem and modem.isWireless then
         print("Modem type: Wireless")
     else
         print("Modem type: Wired (THIS WON'T WORK!)")
@@ -436,7 +600,7 @@ local function testNetwork()
     local test_msg = {
         type = "test",
         from = computer_id,
-        message = "Hello from " .. computer_id,
+        message = "Hello from " .. (is_terminal and "terminal" or "computer") .. " " .. computer_id,
         timestamp = os.time()
     }
     rednet.broadcast(test_msg, protocol)
@@ -459,7 +623,7 @@ local function testNetwork()
         print("1. Other computers running?")
         print("2. Using wireless modems?")
         print("3. Same protocol name?")
-        print("4. Within 64 block range?")
+        print("4. Within range? (64 blocks/infinite for ender)")
     end
     
     print("\nPress any key to return...")
@@ -509,7 +673,7 @@ local function handleMessage(msg)
         local response = {
             type = "test",
             from = computer_id,
-            message = "Response from " .. computer_id,
+            message = "Response from " .. (is_terminal and "terminal" or "computer") .. " " .. computer_id,
             timestamp = os.time()
         }
         rednet.broadcast(response, protocol)
@@ -546,12 +710,27 @@ local function handleMessage(msg)
             current_alarm_type = msg.alarm_type or "general"
             alarm_start_time = os.time()
             alarm_triggered_by = msg.source_id
-            redstone.setOutput(redstone_output_side, true)
+            
+            -- Only set redstone output if we're not a terminal
+            if not is_terminal then
+                redstone.setOutput(redstone_output_side, true)
+            else
+                -- Terminal notification with vibration
+                terminalNotify("NETWORK ALARM: " .. string.upper(current_alarm_type), true)
+            end
+            
             drawScreen()
             log("Alarm started remotely: " .. current_alarm_type .. " by computer " .. msg.source_id)
         elseif msg.action == "stop" and warning_active then
             warning_active = false
-            redstone.setOutput(redstone_output_side, false)
+            
+            -- Only control redstone if we're not a terminal
+            if not is_terminal then
+                redstone.setOutput(redstone_output_side, false)
+            else
+                terminalNotify("ALARM CANCELLED BY NETWORK", false)
+            end
+            
             drawScreen()
             log("Alarm stopped remotely by computer " .. msg.source_id)
             alarm_triggered_by = nil
@@ -561,7 +740,8 @@ local function handleMessage(msg)
         network_nodes[msg.computer_id] = {
             last_seen = os.time(),
             computer_id = msg.computer_id,
-            hops = msg.hops or 0
+            hops = msg.hops or 0,
+            device_type = msg.device_type or "computer"
         }
         
         -- New computer joining during active alarm - sync alarm state
@@ -572,8 +752,20 @@ local function handleMessage(msg)
             alarm_start_time = msg.alarm_start_time or os.time()
             alarm_triggered_by = msg.alarm_triggered_by
             alarm_note_index = 1  -- Start from beginning of pattern
-            redstone.setOutput(redstone_output_side, true)
+            
+            -- Only set redstone output if we're not a terminal
+            if not is_terminal then
+                redstone.setOutput(redstone_output_side, true)
+            else
+                terminalNotify("JOINING ACTIVE ALARM: " .. string.upper(current_alarm_type), true)
+            end
+            
             drawScreen()
+        end
+        
+        -- Update connection strength for terminals
+        if is_terminal then
+            terminal_features.connection_strength = math.min(5, math.max(1, terminal_features.connection_strength))
         end
         
         -- Only update screen if we're on the main screen
@@ -585,22 +777,58 @@ end
 
 -- Modem check and initialization
 local function init()
-    for _, side in pairs(peripheral.getNames()) do
-        if peripheral.getType(side) == "modem" then
-            modem_side = side
-            rednet.open(side)
-            print("Modem found on " .. side)
-            log("System started - Modem found on " .. side)
-            break
+    -- Check if we're on a terminal first
+    if is_terminal then
+        print("Running on wireless terminal")
+        log("System started on wireless terminal")
+        
+        -- Terminals typically have built-in wireless modems
+        for _, side in pairs(peripheral.getNames()) do
+            if peripheral.getType(side) == "modem" then
+                local modem = peripheral.wrap(side)
+                if modem and modem.isWireless and modem.isWireless() then
+                    modem_side = side
+                    rednet.open(side)
+                    print("Built-in wireless modem found")
+                    break
+                end
+            end
+        end
+        
+        -- If no wireless modem found, check for any modem
+        if not modem_side then
+            for _, side in pairs(peripheral.getNames()) do
+                if peripheral.getType(side) == "modem" then
+                    modem_side = side
+                    rednet.open(side)
+                    print("Modem found on " .. side)
+                    break
+                end
+            end
+        end
+    else
+        -- Regular computer logic
+        for _, side in pairs(peripheral.getNames()) do
+            if peripheral.getType(side) == "modem" then
+                modem_side = side
+                rednet.open(side)
+                print("Modem found on " .. side)
+                log("System started - Modem found on " .. side)
+                break
+            end
         end
     end
 
     if not modem_side then
-        error("No modem found. Please attach one on left or right.")
+        error("No modem found. Please attach one or enable wireless.")
     end
-    if not speaker then
+    
+    if not speaker and not is_terminal then
         print("Warning: No speaker found. Audio will not play.")
         log("Warning: No speaker found. Audio will not play.")
+    elseif is_terminal and not speaker then
+        print("Terminal mode: Audio disabled (no speaker)")
+        log("Terminal mode: Audio disabled (no speaker)")
     end
     
     -- Debug: Check if rednet is actually open
@@ -633,6 +861,7 @@ local function init()
     
     -- Auto-check for updates on startup
     print("Auto-checking for updates...")
+    print("Running on: " .. (is_terminal and "Terminal" or "Computer"))
     checkForUpdates(true) -- true = auto mode
 end
 
@@ -646,6 +875,14 @@ local function main()
     -- Start heartbeat timer and alarm timer
     local heartbeat_timer = os.startTimer(config.heartbeat_interval)
     local alarm_timer = nil
+    local gps_timer = nil
+    local battery_timer = nil
+    
+    -- Terminal-specific timers
+    if is_terminal then
+        gps_timer = os.startTimer(60) -- Update GPS every minute
+        battery_timer = os.startTimer(300) -- Check battery every 5 minutes
+    end
     
     -- Unified event loop with responsive input handling
     while true do
@@ -660,15 +897,30 @@ local function main()
                 startAlarm("evacuation")
             elseif keyCode == keys.s then
                 showStatus()
-            elseif keyCode == keys.l then
+            elseif keyCode == keys.l and not is_terminal then
                 showLogs()
-            elseif keyCode == keys.t then
+            elseif keyCode == keys.t and not is_terminal then
                 testNetwork()
             elseif keyCode == keys.u then
                 checkForUpdates(false) -- false = manual mode
                 drawScreen()
-            elseif not warning_active then
-                -- Any other key starts general alarm
+            elseif keyCode == keys.g and is_terminal then
+                -- G key for general alarm on terminals
+                startAlarm("general")
+            elseif keyCode == keys.i and is_terminal then
+                -- I key for terminal info
+                showTerminalInfo()
+            elseif keyCode == keys.m and is_terminal then
+                -- M key to toggle silent mode
+                terminal_features.silent_mode = not terminal_features.silent_mode
+                terminalLog("Silent mode " .. (terminal_features.silent_mode and "enabled" or "disabled"))
+                drawScreen()
+            elseif keyCode == keys.q and is_terminal then
+                -- Q key to quit on terminals
+                print("Terminal shutting down...")
+                break
+            elseif not warning_active and not is_terminal then
+                -- Any other key starts general alarm (computers only)
                 startAlarm("general")
             end
             
@@ -684,9 +936,23 @@ local function main()
             if timer_id == heartbeat_timer then
                 sendHeartbeat()
                 heartbeat_timer = os.startTimer(config.heartbeat_interval)
+                
+                -- Decay connection strength for terminals
+                if is_terminal then
+                    terminal_features.connection_strength = math.max(0, terminal_features.connection_strength - 1)
+                end
+            elseif timer_id == gps_timer and is_terminal then
+                updateGPS()
+                gps_timer = os.startTimer(60)
+            elseif timer_id == battery_timer and is_terminal then
+                local battery = checkBattery()
+                if battery and battery < terminal_features.battery_warning_threshold then
+                    terminalNotify("LOW BATTERY: " .. battery .. "%", true)
+                end
+                battery_timer = os.startTimer(300)
             elseif timer_id == alarm_timer then
-                -- Time to play next alarm note
-                if warning_active then
+                -- Time to play next alarm note (only if not a terminal or if terminal has speaker)
+                if warning_active and (not is_terminal or speaker) then
                     local pattern = alarm_patterns[current_alarm_type]
                     local volume = config.base_volume + (config.volume_increment * math.min(30, (os.time() - (alarm_start_time or 0))))
                     volume = math.min(config.max_volume, volume)
@@ -724,13 +990,13 @@ local function main()
             end
         end
         
-        -- Start alarm timer when alarm becomes active
-        if warning_active and not alarm_timer then
+        -- Start alarm timer when alarm becomes active (only for devices with speakers)
+        if warning_active and not alarm_timer and (not is_terminal or speaker) then
             alarm_timer = os.startTimer(0.05) -- Start very quickly
         end
         
         -- Backup alarm restart mechanism during server lag
-        if warning_active and not alarm_timer then
+        if warning_active and not alarm_timer and (not is_terminal or speaker) then
             -- If somehow the alarm timer got lost during lag, restart it
             log("Alarm timer lost during lag - restarting")
             alarm_note_index = 1
