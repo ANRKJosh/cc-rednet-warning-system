@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (louder, we're an alarm after all...)
+-- Enhanced PoggishTown Warning System ROBUST
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -137,9 +137,24 @@ end
 local function hasEnderModem()
     local modem = peripheral.wrap(modem_side)
     if modem then
-        -- Ender modems are wireless but don't have the isWireless() method
-        -- or they return false for isWireless() despite being wireless-capable
-        return modem.isWireless and not modem.isWireless()
+        -- Try multiple detection methods for ender modems
+        -- Method 1: Check if isWireless method exists but returns false
+        if modem.isWireless and not modem.isWireless() then
+            return true
+        end
+        -- Method 2: Check if isWireless method doesn't exist (some ender modem versions)
+        if not modem.isWireless then
+            return true
+        end
+        -- Method 3: Check peripheral name (ender modems often show as just "modem")
+        local modem_type = peripheral.getType(modem_side)
+        if modem_type == "modem" then
+            -- Try to call a wireless-specific method to see if it fails
+            local success, result = pcall(function() return modem.isWireless() end)
+            if not success or not result then
+                return true
+            end
+        end
     end
     return false
 end
@@ -595,17 +610,16 @@ local function init()
     
     -- Check what type of modem we have
     local modem = peripheral.wrap(modem_side)
-    if modem.isWireless then
-        if modem.isWireless() then
-            print("Regular wireless modem detected")
-            print("Range: 64 blocks, relaying enabled")
-        else
-            print("Ender modem detected (infinite range)")
-            print("Relay settings optimized for ender modems")
-        end
-    else
+    local is_ender = hasEnderModem()
+    
+    if is_ender then
         print("Ender modem detected (infinite range)")
         print("Relay settings optimized for ender modems")
+        log("Ender modem detected - using optimized relay settings")
+    else
+        print("Regular wireless modem detected")
+        print("Range: 64 blocks, relaying enabled")
+        log("Regular wireless modem detected")
     end
     
     -- Wait a moment then send initial heartbeat
@@ -689,10 +703,13 @@ local function main()
                         end
                         
                         -- Set timer for next note based on current note's duration
-                        alarm_timer = os.startTimer(sound.duration)
+                        -- Add minimum delay to ensure timer fires even during lag
+                        local next_delay = math.max(sound.duration, 0.1)
+                        alarm_timer = os.startTimer(next_delay)
                     else
                         -- Fallback timer if something goes wrong
                         alarm_timer = os.startTimer(0.2)
+                        alarm_note_index = 1  -- Reset to start
                     end
                     
                     -- Check for auto-timeout
@@ -709,7 +726,15 @@ local function main()
         
         -- Start alarm timer when alarm becomes active
         if warning_active and not alarm_timer then
-            alarm_timer = os.startTimer(0.1) -- Start immediately
+            alarm_timer = os.startTimer(0.05) -- Start very quickly
+        end
+        
+        -- Backup alarm restart mechanism during server lag
+        if warning_active and not alarm_timer then
+            -- If somehow the alarm timer got lost during lag, restart it
+            log("Alarm timer lost during lag - restarting")
+            alarm_note_index = 1
+            alarm_timer = os.startTimer(0.1)
         end
     end
 end
