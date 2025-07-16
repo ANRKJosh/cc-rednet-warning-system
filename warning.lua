@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (copium)
+-- Enhanced PoggishTown Warning System (we fix now, cope?)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -80,6 +80,8 @@ local terminal_features = {
     last_gps_coords = nil,         -- Last known coordinates
     connection_strength = 0        -- Signal strength indicator
 }
+
+-- Format time string
 
 -- Alarm patterns (different sounds for different alert types)
 local alarm_patterns = {
