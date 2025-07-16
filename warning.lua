@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (works with wireless terminals better)
+-- Enhanced PoggishTown Warning System (turns out the last one didn't work at all, so now this should work)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -52,7 +52,11 @@ local config = {
     max_hops = 3,              -- Reduced from 8 - ender modems have infinite range
     relay_delay = 0.2,         -- Increased from 0.05 to reduce spam
     -- Single update URL - program adapts based on device type
-    update_url = "https://raw.githubusercontent.com/ANRKJosh/cc-rednet-warning-system/refs/heads/main/warning.lua"
+    update_url = "https://raw.githubusercontent.com/ANRKJosh/cc-rednet-warning-system/refs/heads/main/warning.lua",
+    -- Background update checking
+    background_update_check = true,  -- Enable background update checking
+    update_check_interval = 300,     -- 5 minutes between background checks
+    auto_apply_updates = false       -- Only auto-apply on computers, not terminals
 }
 
 -- Network state tracking
@@ -63,6 +67,9 @@ local alarm_triggered_by = nil
 local message_history = {}  -- Track recent messages to prevent loops
 local alarm_note_index = 1  -- Track which note we're currently playing
 local is_terminal = isWirelessTerminal()
+local update_available = false  -- Track if update is available
+local last_update_check = 0     -- Last time we checked for updates
+local background_update_running = false  -- Prevent multiple simultaneous checks
 
 -- Alarm patterns (different sounds for different alert types)
 local alarm_patterns = {
@@ -230,12 +237,74 @@ local function relayMessage(msg)
     end
 end
 
--- Auto-update system
-local function checkForUpdates(auto_mode)
+-- Background update checker (non-blocking)
+local function backgroundUpdateCheck()
+    if not config.background_update_check then return end
+    if background_update_running then return end
+    if (os.time() - last_update_check) < config.update_check_interval then return end
+    
+    background_update_running = true
+    last_update_check = os.time()
+    
+    -- Use parallel API to make it non-blocking
+    parallel.waitForAny(
+        function()
+            -- Background HTTP request with timeout
+            local success, request = pcall(function()
+                return http.get(config.update_url, nil, nil, 3) -- 3 second timeout
+            end)
+            
+            if success and request then
+                local remote_content = request.readAll()
+                request.close()
+                
+                -- Read current file
+                local filename = is_terminal and "pogalert" or "startup"
+                local current_content = ""
+                if fs.exists(filename) then
+                    local file = fs.open(filename, "r")
+                    if file then
+                        current_content = file.readAll()
+                        file.close()
+                    end
+                end
+                
+                -- Check if update is available
+                if remote_content ~= current_content then
+                    update_available = true
+                    log("Background update check: New version available")
+                    
+                    -- Auto-apply for computers only, and only if not during alarm
+                    if not is_terminal and not warning_active and config.auto_apply_updates then
+                        local file = fs.open(filename, "w")
+                        if file then
+                            file.write(remote_content)
+                            file.close()
+                            log("Background update: Auto-applied new version")
+                            update_available = false
+                        end
+                    end
+                else
+                    update_available = false
+                end
+            end
+            
+            background_update_running = false
+        end,
+        function()
+            -- Timeout fallback (5 seconds max)
+            sleep(5)
+            background_update_running = false
+        end
+    )
+end
+
+-- Manual update check (blocking, with user feedback)
+local function checkForUpdates(manual_mode)
     -- Different file names for different device types
     local filename = is_terminal and "pogalert" or "startup"
     
-    if not auto_mode then
+    if manual_mode then
         print("Checking for updates...")
         print("Device type: " .. (is_terminal and "Terminal" or "Computer"))
         print("File: " .. filename)
@@ -259,10 +328,9 @@ local function checkForUpdates(auto_mode)
         
         -- Compare content
         if remote_content ~= current_content then
-            if auto_mode then
-                print("Auto-update: New version found! Downloading...")
-                log("Auto-update: Downloading new version to " .. filename)
-            else
+            update_available = true
+            
+            if manual_mode then
                 print("Update available! Downloading...")
             end
             
@@ -270,20 +338,9 @@ local function checkForUpdates(auto_mode)
             if file then
                 file.write(remote_content)
                 file.close()
+                update_available = false
                 
-                if auto_mode then
-                    if is_terminal then
-                        print("Terminal alert system updated!")
-                        print("Restart this program to apply changes.")
-                        log("Auto-update: Update downloaded to " .. filename)
-                        sleep(2)
-                    else
-                        print("Auto-update: Update downloaded! Restarting in 3 seconds...")
-                        log("Auto-update: Update downloaded, restarting")
-                        sleep(3)
-                        os.reboot()
-                    end
-                else
+                if manual_mode then
                     print("Update downloaded!")
                     if is_terminal then
                         print("Restart this program to apply changes.")
@@ -296,22 +353,27 @@ local function checkForUpdates(auto_mode)
                         print("Restarting...")
                         os.reboot()
                     end
+                else
+                    log("Manual update: Downloaded new version to " .. filename)
                 end
             else
-                print("Failed to write update file.")
+                if manual_mode then
+                    print("Failed to write update file.")
+                end
             end
         else
-            if not auto_mode then
+            update_available = false
+            if manual_mode then
                 print("Already up to date!")
             end
         end
     else
-        if not auto_mode then
+        if manual_mode then
             print("Failed to check for updates (no internet?)")
         end
     end
     
-    if not auto_mode then
+    if manual_mode then
         sleep(2)
     end
 end
@@ -377,22 +439,19 @@ local function drawScreen()
         print("U - Update  | I - Terminal Info")
         print("M - Silent Mode | Q - Quit")
         
+        -- Show update indicator for terminals
+        if update_available then
+            term.setCursorPos(1, 18)
+            term.setTextColor(colors.yellow)
+            print("UPDATE READY! Press U")
+            term.setTextColor(colors.white)
+        end
+        
         -- Terminal-specific status
         term.setCursorPos(1, 20)
         term.setTextColor(colors.cyan)
         
-        -- Battery indicator
-        local battery = checkBattery()
-        if battery then
-            local bat_color = battery < 10 and colors.red or battery < 30 and colors.yellow or colors.green
-            term.setTextColor(bat_color)
-            print("Bat: " .. battery .. "%")
-        else
-            print("Bat: OK")
-        end
-        
         -- GPS and other status
-        term.setTextColor(colors.cyan)
         local coords = terminal_features.last_gps_coords
         if coords then
             print("GPS: " .. coords.x .. "," .. coords.y .. "," .. coords.z)
@@ -454,6 +513,14 @@ local function drawScreen()
         print("E - Evacuation alarm")
         print("C - Cancel alarm")
         print("S - Status | L - Logs | T - Test | U - Update")
+        
+        -- Show update indicator
+        if update_available then
+            term.setCursorPos(1, 22)
+            term.setTextColor(colors.yellow)
+            print("UPDATE AVAILABLE! Press U to install")
+            term.setTextColor(colors.white)
+        end
     end
 end
 
@@ -862,7 +929,7 @@ local function init()
     -- Auto-check for updates on startup
     print("Auto-checking for updates...")
     print("Running on: " .. (is_terminal and "Terminal" or "Computer"))
-    checkForUpdates(true) -- true = auto mode
+    checkForUpdates(false) -- false = startup mode (no manual user feedback)
 end
 
 -- Main loop
@@ -877,11 +944,16 @@ local function main()
     local alarm_timer = nil
     local gps_timer = nil
     local battery_timer = nil
+    local update_check_timer = nil
     
     -- Terminal-specific timers
     if is_terminal then
         gps_timer = os.startTimer(60) -- Update GPS every minute
-        battery_timer = os.startTimer(300) -- Check battery every 5 minutes
+    end
+    
+    -- Background update check timer
+    if config.background_update_check then
+        update_check_timer = os.startTimer(config.update_check_interval)
     end
     
     -- Unified event loop with responsive input handling
@@ -902,7 +974,7 @@ local function main()
             elseif keyCode == keys.t and not is_terminal then
                 testNetwork()
             elseif keyCode == keys.u then
-                checkForUpdates(false) -- false = manual mode
+                checkForUpdates(true) -- true = manual mode
                 drawScreen()
             elseif keyCode == keys.g and is_terminal then
                 -- G key for general alarm on terminals
@@ -944,12 +1016,12 @@ local function main()
             elseif timer_id == gps_timer and is_terminal then
                 updateGPS()
                 gps_timer = os.startTimer(60)
-            elseif timer_id == battery_timer and is_terminal then
-                local battery = checkBattery()
-                if battery and battery < terminal_features.battery_warning_threshold then
-                    terminalNotify("LOW BATTERY: " .. battery .. "%", true)
+            elseif timer_id == update_check_timer then
+                -- Background update check (non-blocking)
+                backgroundUpdateCheck()
+                if config.background_update_check then
+                    update_check_timer = os.startTimer(config.update_check_interval)
                 end
-                battery_timer = os.startTimer(300)
             elseif timer_id == alarm_timer then
                 -- Time to play next alarm note (only if not a terminal or if terminal has speaker)
                 if warning_active and (not is_terminal or speaker) then
