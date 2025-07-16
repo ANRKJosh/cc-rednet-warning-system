@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System - v3 more debug
+-- Enhanced PoggishTown Warning System - v3 we don't do parallel anymore
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -59,27 +59,26 @@ local function log(message)
     end
 end
 
--- Play alarm with current pattern
-local function playAlarm()
-    local volume = config.base_volume
-    local pattern = alarm_patterns[current_alarm_type]
+-- Play alarm with current pattern (non-blocking version)
+local function playAlarmStep()
+    if not warning_active then return end
     
-    while warning_active do
-        for _, sound in ipairs(pattern) do
-            if not warning_active then break end
-            if speaker then
-                speaker.playNote("bass", volume, sound.note)
-            end
-            sleep(sound.duration)
+    local pattern = alarm_patterns[current_alarm_type]
+    local volume = config.base_volume + (config.volume_increment * math.min(50, (os.time() - (alarm_start_time or 0))))
+    volume = math.min(config.max_volume, volume)
+    
+    for _, sound in ipairs(pattern) do
+        if not warning_active then break end
+        if speaker then
+            speaker.playNote("bass", volume, sound.note)
         end
-        volume = math.min(config.max_volume, volume + config.volume_increment)
-        
-        -- Check for auto-timeout
-        if alarm_start_time and (os.time() - alarm_start_time) > config.auto_stop_timeout then
-            log("Auto-stopping alarm due to timeout")
-            stopAlarm()
-            break
-        end
+        sleep(sound.duration)
+    end
+    
+    -- Check for auto-timeout
+    if alarm_start_time and (os.time() - alarm_start_time) > config.auto_stop_timeout then
+        log("Auto-stopping alarm due to timeout")
+        stopAlarm()
     end
 end
 
@@ -564,30 +563,60 @@ local function main()
     init()
     drawScreen()
     
-    log("Starting all handlers...")
-    print("Starting parallel handlers...")
-    print("Press any key to continue...")
-    os.pullEvent("key")
-
-    -- Run all handlers in parallel
-    parallel.waitForAll(
-        function()
-            log("Input handler started")
-            handleInput()
-        end,
-        function()
-            log("Network handler started")
-            handleNetwork()
-        end,
-        function()
-            log("Alarm handler started")
-            handleAlarm()
-        end,
-        function()
-            log("Heartbeat handler started")
-            handleHeartbeat()
+    log("Starting unified event handler...")
+    
+    -- Start heartbeat timer
+    local heartbeat_timer = os.startTimer(config.heartbeat_interval)
+    
+    -- Unified event loop instead of parallel processing
+    while true do
+        local event, param1, param2, param3, param4, param5 = os.pullEvent()
+        
+        if event == "key" then
+            local keyCode = param1
+            if keyCode == keys.c then
+                stopAlarm()
+            elseif keyCode == keys.e then
+                startAlarm("evacuation")
+            elseif keyCode == keys.s then
+                showStatus()
+            elseif keyCode == keys.l then
+                showLogs()
+            elseif keyCode == keys.t then
+                testNetwork()
+            elseif not warning_active then
+                -- Any other key starts general alarm
+                startAlarm("general")
+            end
+            
+        elseif event == "rednet_message" then
+            local sender_id, message, proto = param1, param2, param3
+            if proto == protocol then
+                log("Raw message received: " .. textutils.serialize(message))
+                handleMessage(message)
+            end
+            
+        elseif event == "timer" then
+            local timer_id = param1
+            if timer_id == heartbeat_timer then
+                sendHeartbeat()
+                heartbeat_timer = os.startTimer(config.heartbeat_interval)
+            end
         end
-    )
+        
+        -- Handle alarm sound in the background
+        if warning_active then
+            -- Start alarm sound in parallel without blocking main event loop
+            parallel.waitForAny(
+                function()
+                    playAlarm()
+                end,
+                function()
+                    os.pullEvent() -- Wait for any event to interrupt alarm
+                end
+            )
+        end
+    end
 end
 
 main()
