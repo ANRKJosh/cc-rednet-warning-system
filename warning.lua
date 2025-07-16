@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (we done now?)
+-- Enhanced PoggishTown Warning System (apparently not done)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -13,13 +13,14 @@ local redstone_output_side = "back"
 local config = {
     heartbeat_interval = 30,    -- seconds between heartbeats
     max_offline_time = 90,      -- seconds before marking node as offline
-    auto_stop_timeout = 900,    -- seconds to auto-stop alarm (15 minutes)
-    volume_increment = 0.1,     -- Increased from 0.05
-    max_volume = 5.0,           -- Increased from 2.0
-    base_volume = 1.0,          -- Increased from 0.5
+    auto_stop_timeout = 300,    -- seconds to auto-stop alarm (5 minutes)
+    volume_increment = 0.2,     -- Increased from 0.1
+    max_volume = 10.0,          -- Increased from 5.0 - very loud!
+    base_volume = 2.0,          -- Increased from 1.0
     enable_relay = true,        -- enable message relaying
     max_hops = 8,              -- Increased from 5 for better range
-    relay_delay = 0.05         -- Reduced from 0.1 for faster relaying
+    relay_delay = 0.05,        -- Reduced from 0.1 for faster relaying
+    update_url = "https://raw.githubusercontent.com/ANRKJosh/cc-rednet-warning-system/refs/heads/main/warning.lua"
 }
 
 -- Network state tracking
@@ -158,9 +159,48 @@ local function relayMessage(msg)
 end
 
 -- Format time string
-local function getTimeString()
-    local t = textutils.formatTime(os.time(), true)
-    return "Triggered at: " .. t
+-- Auto-update system
+local function checkForUpdates()
+    print("Checking for updates...")
+    local request = http.get(config.update_url)
+    if request then
+        local remote_content = request.readAll()
+        request.close()
+        
+        -- Read current file
+        local current_content = ""
+        if fs.exists("startup") then
+            local file = fs.open("startup", "r")
+            if file then
+                current_content = file.readAll()
+                file.close()
+            end
+        end
+        
+        -- Compare content
+        if remote_content ~= current_content then
+            print("Update available! Downloading...")
+            local file = fs.open("startup", "w")
+            if file then
+                file.write(remote_content)
+                file.close()
+                print("Update downloaded! Restart to apply changes.")
+                print("Press U to restart now, or any other key to continue...")
+                local _, key = os.pullEvent("key")
+                if key == keys.u then
+                    print("Restarting...")
+                    os.reboot()
+                end
+            else
+                print("Failed to write update file.")
+            end
+        else
+            print("Already up to date!")
+        end
+    else
+        print("Failed to check for updates (no internet?)")
+    end
+    sleep(2)
 end
 
 local function getActiveNodeCount()
@@ -221,7 +261,7 @@ local function drawScreen()
     print("Any key - General alarm")
     print("E - Evacuation alarm")
     print("C - Cancel alarm")
-    print("S - Status | L - Logs | T - Test")
+    print("S - Status | L - Logs | T - Test | U - Update")
 end
 
 -- Broadcast over network with source ID and relay support
@@ -534,8 +574,9 @@ local function main()
     
     log("Starting unified event handler...")
     
-    -- Start heartbeat timer
+    -- Start heartbeat timer and alarm timer
     local heartbeat_timer = os.startTimer(config.heartbeat_interval)
+    local alarm_timer = nil
     
     -- Unified event loop with responsive input handling
     while true do
@@ -554,6 +595,9 @@ local function main()
                 showLogs()
             elseif keyCode == keys.t then
                 testNetwork()
+            elseif keyCode == keys.u then
+                checkForUpdates()
+                drawScreen()
             elseif not warning_active then
                 -- Any other key starts general alarm
                 startAlarm("general")
@@ -571,29 +615,27 @@ local function main()
             if timer_id == heartbeat_timer then
                 sendHeartbeat()
                 heartbeat_timer = os.startTimer(config.heartbeat_interval)
+            elseif timer_id == alarm_timer then
+                -- Time to play next alarm cycle
+                if warning_active then
+                    playAlarmStep()
+                    alarm_timer = os.startTimer(1) -- Play alarm every 1 second
+                    
+                    -- Check for auto-timeout
+                    if alarm_start_time and (os.time() - alarm_start_time) > config.auto_stop_timeout then
+                        log("Auto-stopping alarm due to timeout")
+                        stopAlarm()
+                        alarm_timer = nil
+                    end
+                else
+                    alarm_timer = nil
+                end
             end
         end
         
-        -- Handle alarm sound more efficiently - shorter duration, less blocking
-        if warning_active then
-            -- Play one alarm cycle quickly without blocking too long
-            local pattern = alarm_patterns[current_alarm_type]
-            local volume = config.base_volume + (config.volume_increment * math.min(30, (os.time() - (alarm_start_time or 0))))
-            volume = math.min(config.max_volume, volume)
-            
-            for _, sound in ipairs(pattern) do
-                if not warning_active then break end
-                if speaker then
-                    speaker.playNote("bass", volume, sound.note)
-                end
-                sleep(sound.duration * 0.5) -- Shorter sleep for more responsiveness
-            end
-            
-            -- Check for auto-timeout
-            if alarm_start_time and (os.time() - alarm_start_time) > config.auto_stop_timeout then
-                log("Auto-stopping alarm due to timeout")
-                stopAlarm()
-            end
+        -- Start alarm timer when alarm becomes active
+        if warning_active and not alarm_timer then
+            alarm_timer = os.startTimer(0.1) -- Start immediately
         end
     end
 end
