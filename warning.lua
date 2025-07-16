@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (turns out the last one didn't work at all, so now this should work)
+-- Enhanced PoggishTown Warning System (copium)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -70,6 +70,16 @@ local is_terminal = isWirelessTerminal()
 local update_available = false  -- Track if update is available
 local last_update_check = 0     -- Last time we checked for updates
 local background_update_running = false  -- Prevent multiple simultaneous checks
+
+-- Terminal-specific features (always defined, even for computers)
+local terminal_features = {
+    location_tracking = true,       -- Track GPS coordinates if available
+    silent_mode = false,           -- Silent mode for stealth operations
+    vibrate_alerts = true,         -- Use screen flashing as "vibration"
+    compact_log = {},              -- In-memory compact log for terminals
+    last_gps_coords = nil,         -- Last known coordinates
+    connection_strength = 0        -- Signal strength indicator
+}
 
 -- Alarm patterns (different sounds for different alert types)
 local alarm_patterns = {
