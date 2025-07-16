@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System - now we can auto start
+-- Enhanced PoggishTown Warning System (we done now?)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -13,13 +13,13 @@ local redstone_output_side = "back"
 local config = {
     heartbeat_interval = 30,    -- seconds between heartbeats
     max_offline_time = 90,      -- seconds before marking node as offline
-    auto_stop_timeout = 300,    -- seconds to auto-stop alarm (5 minutes)
-    volume_increment = 0.05,
-    max_volume = 5.0,
-    base_volume = 1.0,
+    auto_stop_timeout = 900,    -- seconds to auto-stop alarm (15 minutes)
+    volume_increment = 0.1,     -- Increased from 0.05
+    max_volume = 5.0,           -- Increased from 2.0
+    base_volume = 1.0,          -- Increased from 0.5
     enable_relay = true,        -- enable message relaying
-    max_hops = 5,              -- maximum number of hops for a message
-    relay_delay = 0.1          -- small delay before relaying to prevent spam
+    max_hops = 8,              -- Increased from 5 for better range
+    relay_delay = 0.05         -- Reduced from 0.1 for faster relaying
 }
 
 -- Network state tracking
@@ -46,12 +46,40 @@ local alarm_patterns = {
 
 local current_alarm_type = "general"
 
--- Logging system
+-- Logging system with rotation
 local log_file = "warning_system.log"
+local max_log_size = 10000  -- Max log file size in bytes
+
 local function log(message)
     local timestamp = textutils.formatTime(os.time(), true)
     local entry = "[" .. timestamp .. "] " .. message .. "\n"
     
+    -- Check if log file is too large and rotate it
+    if fs.exists(log_file) and fs.getSize(log_file) > max_log_size then
+        -- Keep only the last 50 lines
+        local old_file = fs.open(log_file, "r")
+        local lines = {}
+        if old_file then
+            local line = old_file.readLine()
+            while line do
+                table.insert(lines, line)
+                line = old_file.readLine()
+            end
+            old_file.close()
+            
+            -- Write back only the last 50 lines
+            local new_file = fs.open(log_file, "w")
+            if new_file then
+                local start = math.max(1, #lines - 49)  -- Keep 49 old + 1 new = 50 total
+                for i = start, #lines do
+                    new_file.writeLine(lines[i])
+                end
+                new_file.close()
+            end
+        end
+    end
+    
+    -- Append the new log entry
     local file = fs.open(log_file, "a")
     if file then
         file.write(entry)
@@ -64,7 +92,7 @@ local function playAlarmStep()
     if not warning_active then return end
     
     local pattern = alarm_patterns[current_alarm_type]
-    local volume = config.base_volume + (config.volume_increment * math.min(50, (os.time() - (alarm_start_time or 0))))
+    local volume = config.base_volume + (config.volume_increment * math.min(30, (os.time() - (alarm_start_time or 0))))
     volume = math.min(config.max_volume, volume)
     
     for _, sound in ipairs(pattern) do
@@ -213,7 +241,7 @@ local function broadcast(action, alarm_type, source_id)
     log("Broadcast: " .. action .. " (" .. (alarm_type or "general") .. ") from " .. (source_id or computer_id))
 end
 
--- Send heartbeat with relay support
+-- Send heartbeat with relay support and current alarm status
 local function sendHeartbeat()
     local message = {
         type = "heartbeat",
@@ -221,7 +249,12 @@ local function sendHeartbeat()
         origin_id = computer_id,
         timestamp = os.time(),
         message_id = generateMessageId(),
-        hops = 0
+        hops = 0,
+        -- Include current alarm status for new computers
+        alarm_active = warning_active,
+        alarm_type = current_alarm_type,
+        alarm_start_time = alarm_start_time,
+        alarm_triggered_by = alarm_triggered_by
     }
     rednet.broadcast(message, protocol)
     markMessageSeen(message.message_id)
@@ -426,6 +459,18 @@ local function handleMessage(msg)
             computer_id = msg.computer_id,
             hops = msg.hops or 0
         }
+        
+        -- New computer joining during active alarm - sync alarm state
+        if msg.alarm_active and not warning_active and msg.computer_id ~= computer_id then
+            log("New computer detected during active alarm - syncing alarm state")
+            warning_active = true
+            current_alarm_type = msg.alarm_type or "general"
+            alarm_start_time = msg.alarm_start_time or os.time()
+            alarm_triggered_by = msg.alarm_triggered_by
+            redstone.setOutput(redstone_output_side, true)
+            drawScreen()
+        end
+        
         -- Only update screen if we're on the main screen
         if term.getCursorPos() == 1 then
             drawScreen()
@@ -492,8 +537,9 @@ local function main()
     -- Start heartbeat timer
     local heartbeat_timer = os.startTimer(config.heartbeat_interval)
     
-    -- Unified event loop instead of parallel processing
+    -- Unified event loop with responsive input handling
     while true do
+        -- Check for input with short timeout to keep system responsive
         local event, param1, param2, param3, param4, param5 = os.pullEvent()
         
         if event == "key" then
@@ -528,17 +574,26 @@ local function main()
             end
         end
         
-        -- Handle alarm sound in the background
+        -- Handle alarm sound more efficiently - shorter duration, less blocking
         if warning_active then
-            -- Start alarm sound in parallel without blocking main event loop
-            parallel.waitForAny(
-                function()
-                    playAlarmStep()
-                end,
-                function()
-                    os.pullEvent() -- Wait for any event to interrupt alarm
+            -- Play one alarm cycle quickly without blocking too long
+            local pattern = alarm_patterns[current_alarm_type]
+            local volume = config.base_volume + (config.volume_increment * math.min(30, (os.time() - (alarm_start_time or 0))))
+            volume = math.min(config.max_volume, volume)
+            
+            for _, sound in ipairs(pattern) do
+                if not warning_active then break end
+                if speaker then
+                    speaker.playNote("bass", volume, sound.note)
                 end
-            )
+                sleep(sound.duration * 0.5) -- Shorter sleep for more responsiveness
+            end
+            
+            -- Check for auto-timeout
+            if alarm_start_time and (os.time() - alarm_start_time) > config.auto_stop_timeout then
+                log("Auto-stopping alarm due to timeout")
+                stopAlarm()
+            end
         end
     end
 end
