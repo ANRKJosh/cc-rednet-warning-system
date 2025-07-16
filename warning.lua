@@ -13,10 +13,13 @@ local redstone_output_side = "back"
 local config = {
     heartbeat_interval = 30,    -- seconds between heartbeats
     max_offline_time = 90,      -- seconds before marking node as offline
-    auto_stop_timeout = 900,    -- seconds to auto-stop alarm (15 minutes)
+    auto_stop_timeout = 300,    -- seconds to auto-stop alarm (5 minutes)
     volume_increment = 0.05,
-    max_volume = 5.0,
-    base_volume = 0.5
+    max_volume = 2.0,
+    base_volume = 0.5,
+    enable_relay = true,        -- enable message relaying
+    max_hops = 5,              -- maximum number of hops for a message
+    relay_delay = 0.1          -- small delay before relaying to prevent spam
 }
 
 -- Network state tracking
@@ -24,6 +27,7 @@ local network_nodes = {}
 local last_heartbeat = 0
 local computer_id = os.getComputerID()
 local alarm_triggered_by = nil
+local message_history = {}  -- Track recent messages to prevent loops
 
 -- Alarm patterns (different sounds for different alert types)
 local alarm_patterns = {
@@ -79,13 +83,63 @@ local function playAlarm()
     end
 end
 
--- Format time string
+-- Generate unique message ID
+local function generateMessageId()
+    return computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999)
+end
+
+-- Check if we've seen this message before
+local function isMessageSeen(msg_id)
+    return message_history[msg_id] ~= nil
+end
+
+-- Mark message as seen
+local function markMessageSeen(msg_id)
+    message_history[msg_id] = os.time()
+    -- Clean up old messages (older than 5 minutes)
+    for id, timestamp in pairs(message_history) do
+        if (os.time() - timestamp) > 300 then
+            message_history[id] = nil
+        end
+    end
+end
+
+-- Relay message to other nodes
+local function relayMessage(msg)
+    if not config.enable_relay then return end
+    if not msg.hops then msg.hops = 0 end
+    if msg.hops >= config.max_hops then return end
+    
+    -- Don't relay our own messages
+    if msg.origin_id == computer_id then return end
+    
+    -- Don't relay if we've already seen this message
+    if msg.message_id and isMessageSeen(msg.message_id) then return end
+    
+    -- Add small delay to prevent network spam
+    sleep(config.relay_delay)
+    
+    -- Increment hop count and relay
+    msg.hops = msg.hops + 1
+    msg.relayed_by = computer_id
+    
+    print("Relaying message (hop " .. msg.hops .. "): " .. msg.type)
+    rednet.broadcast(msg, protocol)
+    
+    if msg.message_id then
+        markMessageSeen(msg.message_id)
+    end
+end
 local function getTimeString()
     local t = textutils.formatTime(os.time(), true)
     return "Triggered at: " .. t
 end
 
--- Count active network nodes
+-- Format time string
+local function getTimeString()
+    local t = textutils.formatTime(os.time(), true)
+    return "Triggered at: " .. t
+end
 local function getActiveNodeCount()
     local count = 0
     local current_time = os.time()
@@ -101,9 +155,9 @@ end
 local function drawScreen()
     term.clear()
     term.setCursorPos(1, 1)
-    print("================================")
-    print("=  Poggishtown Warning System  =")
-    print("================================")
+    print("===============================")
+    print("= Two-Way Warning System      =")
+    print("===============================")
     
     -- Computer info
     term.setCursorPos(1, 4)
@@ -151,27 +205,36 @@ local function drawScreen()
     print("System Ready. Listening for events...")
 end
 
--- Broadcast over network with source ID
+-- Broadcast over network with source ID and relay support
 local function broadcast(action, alarm_type, source_id)
     local message = {
         type = "warning",
         action = action,
         alarm_type = alarm_type or current_alarm_type,
         source_id = source_id or computer_id,
-        timestamp = os.time()
+        origin_id = computer_id,  -- Original sender
+        timestamp = os.time(),
+        message_id = generateMessageId(),
+        hops = 0
     }
     rednet.broadcast(message, protocol)
+    markMessageSeen(message.message_id)
     log("Broadcast: " .. action .. " (" .. (alarm_type or "general") .. ") from " .. (source_id or computer_id))
 end
 
--- Send heartbeat
+-- Send heartbeat with relay support
 local function sendHeartbeat()
     local message = {
         type = "heartbeat",
         computer_id = computer_id,
-        timestamp = os.time()
+        origin_id = computer_id,
+        timestamp = os.time(),
+        message_id = generateMessageId(),
+        hops = 0
     }
+    print("Sending heartbeat from computer " .. computer_id)
     rednet.broadcast(message, protocol)
+    markMessageSeen(message.message_id)
 end
 
 -- Start the alarm with type
@@ -207,6 +270,8 @@ local function showStatus()
     term.setCursorPos(1, 1)
     print("=== System Status ===")
     print("Computer ID: " .. computer_id)
+    print("Relay Mode: " .. (config.enable_relay and "ENABLED" or "DISABLED"))
+    print("Max Hops: " .. config.max_hops)
     print("Alarm Active: " .. tostring(warning_active))
     if warning_active then
         print("Alarm Type: " .. current_alarm_type)
@@ -217,8 +282,11 @@ local function showStatus()
     local current_time = os.time()
     for id, node in pairs(network_nodes) do
         local status = (current_time - node.last_seen) <= config.max_offline_time and "ONLINE" or "OFFLINE"
-        print("  Computer " .. id .. ": " .. status .. " (last seen: " .. math.floor(current_time - node.last_seen) .. "s ago)")
+        local hop_info = node.hops and (" (via " .. node.hops .. " hops)") or ""
+        print("  Computer " .. id .. ": " .. status .. hop_info .. " (last seen: " .. math.floor(current_time - node.last_seen) .. "s ago)")
     end
+    
+    print("\nMessage History: " .. #message_history .. " recent messages")
     
     print("\nPress any key to return...")
     os.pullEvent("key")
@@ -257,8 +325,24 @@ local function showLogs()
     drawScreen()
 end
 
--- Handle network message
+-- Handle network message with relay support
 local function handleMessage(msg)
+    -- Skip our own messages
+    if msg.origin_id == computer_id then return end
+    
+    -- Skip duplicate messages
+    if msg.message_id and isMessageSeen(msg.message_id) then return end
+    
+    -- Mark as seen and relay if appropriate
+    if msg.message_id then
+        markMessageSeen(msg.message_id)
+    end
+    
+    print("Received message: " .. msg.type .. " (hop " .. (msg.hops or 0) .. ")")
+    
+    -- Relay message to extend range
+    relayMessage(msg)
+    
     if msg.type == "warning" then
         if msg.action == "start" and not warning_active then
             warning_active = true
@@ -276,9 +360,11 @@ local function handleMessage(msg)
             alarm_triggered_by = nil
         end
     elseif msg.type == "heartbeat" then
+        print("Received heartbeat from computer " .. msg.computer_id)
         network_nodes[msg.computer_id] = {
             last_seen = os.time(),
-            computer_id = msg.computer_id
+            computer_id = msg.computer_id,
+            hops = msg.hops or 0
         }
     end
 end
@@ -289,6 +375,7 @@ local function init()
         if peripheral.getType(side) == "modem" then
             modem_side = side
             rednet.open(side)
+            print("Modem found on " .. side)
             log("System started - Modem found on " .. side)
             break
         end
@@ -298,11 +385,22 @@ local function init()
         error("No modem found. Please attach one on left or right.")
     end
     if not speaker then
+        print("Warning: No speaker found. Audio will not play.")
         log("Warning: No speaker found. Audio will not play.")
     end
     
-    -- Initial heartbeat
+    -- Debug: Check if rednet is actually open
+    print("Rednet open on side: " .. modem_side)
+    print("Computer ID: " .. computer_id)
+    print("Protocol: " .. protocol)
+    
+    -- Wait a moment then send initial heartbeat
+    sleep(1)
+    print("Sending initial heartbeat...")
     sendHeartbeat()
+    
+    -- Wait a moment for any responses
+    sleep(2)
 end
 
 -- Input handler function
