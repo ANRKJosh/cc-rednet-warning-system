@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (message system)
+-- Enhanced PoggishTown Warning System (messaging changes)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -439,21 +439,13 @@ local function drawScreen()
         print("E - Evacuation alarm")
         print("C - Cancel alarm")
         print("S - Status | L - Logs | T - Test")
-        print("U - Update | N - Change Name | M - Messages")
+        print("U - Update | N - Change Name")
         
         -- Show update indicator
         if update_available then
             print("")
             term.setTextColor(colors.yellow)
             print("UPDATE AVAILABLE! Press U to install")
-            term.setTextColor(colors.white)
-        end
-        
-        -- Show unread message indicator
-        if unread_message_count > 0 then
-            print("")
-            term.setTextColor(colors.green)
-            print("NEW MESSAGES (" .. unread_message_count .. ") - Press M")
             term.setTextColor(colors.white)
         end
     end
@@ -842,8 +834,13 @@ local function showStatus()
     drawScreen()
 end
 
--- Send direct message to specific device
+-- Send direct message to specific device (terminals only)
 local function sendDirectMessage(target_id, message_text)
+    if not is_terminal then
+        -- Only terminals can send messages
+        return
+    end
+    
     local message = {
         type = "direct_message",
         target_id = target_id,
@@ -874,12 +871,17 @@ local function sendDirectMessage(target_id, message_text)
     end
 end
 
--- Show messaging interface
+-- Show messaging interface (terminals only)
 local function showMessaging()
+    if not is_terminal then
+        -- This shouldn't happen, but just in case
+        return
+    end
+    
     term.clear()
     term.setCursorPos(1, 1)
-    print("=== Messaging System ===")
-    print("Device: " .. getDisplayName() .. " (ID: " .. computer_id .. ")")
+    print("=== Terminal Messaging ===")
+    print("Terminal: " .. getDisplayName() .. " (ID: " .. computer_id .. ")")
     print("")
     
     -- Show recent messages
@@ -905,24 +907,27 @@ local function showMessaging()
         print("")
     end
     
-    -- Show available contacts
-    print("Online Devices:")
-    print("===============")
+    -- Show available terminals (not computers)
+    print("Online Terminals:")
+    print("=================")
     local current_time = os.time()
-    local online_devices = {}
+    local online_terminals = {}
     
     for id, node in pairs(network_nodes) do
-        if (current_time - node.last_seen) <= config.max_offline_time then
-            table.insert(online_devices, {id = id, name = node.display_name or ("ID:" .. id)})
+        -- Only show terminals in the messaging list
+        if (current_time - node.last_seen) <= config.max_offline_time and 
+           node.device_type == "terminal" and 
+           id ~= computer_id then  -- Don't show ourselves
+            table.insert(online_terminals, {id = id, name = node.display_name or ("Terminal " .. id)})
         end
     end
     
-    if #online_devices > 0 then
-        for i, device in ipairs(online_devices) do
+    if #online_terminals > 0 then
+        for i, device in ipairs(online_terminals) do
             print(i .. ". " .. device.name .. " (ID: " .. device.id .. ")")
         end
         print("")
-        print("Enter device number to message, or 'q' to return:")
+        print("Enter terminal number to message, or 'q' to return:")
         
         local input = read()
         
@@ -932,8 +937,8 @@ local function showMessaging()
         end
         
         local device_num = tonumber(input)
-        if device_num and device_num >= 1 and device_num <= #online_devices then
-            local target = online_devices[device_num]
+        if device_num and device_num >= 1 and device_num <= #online_terminals then
+            local target = online_terminals[device_num]
             print("")
             print("Messaging " .. target.name .. ":")
             print("Enter message (or press Enter to cancel):")
@@ -950,7 +955,7 @@ local function showMessaging()
             sleep(1)
         end
     else
-        print("No devices online.")
+        print("No terminals online.")
         print("")
         print("Press any key to return...")
         os.pullEvent("key")
@@ -1143,8 +1148,8 @@ local function handleMessage(msg)
             alarm_triggered_by = nil
         end
     elseif msg.type == "direct_message" then
-        -- Handle direct messages
-        if msg.target_id == computer_id then
+        -- Handle direct messages (only terminals can receive them)
+        if msg.target_id == computer_id and is_terminal then
             log("Received direct message from " .. msg.sender_name .. ": " .. msg.message_text)
             
             -- Add to message history
@@ -1166,9 +1171,7 @@ local function handleMessage(msg)
             unread_message_count = unread_message_count + 1
             
             -- Terminal notification for messages
-            if is_terminal then
-                terminalNotify("Message from " .. msg.sender_name .. ": " .. msg.message_text, true)
-            end
+            terminalNotify("Message from " .. msg.sender_name .. ": " .. msg.message_text, true)
             
             drawScreen()
         end
@@ -1353,13 +1356,12 @@ local function main()
                 -- N key for changing name (both computers and terminals)
                 changeName()
             elseif keyCode == keys.m and is_terminal then
-                -- M key for messages on terminals
+                -- M key for messages on terminals ONLY
                 showMessaging()
                 unread_message_count = 0  -- Mark messages as read
             elseif keyCode == keys.m and not is_terminal then
-                -- M key for messages on computers
-                showMessaging()
-                unread_message_count = 0  -- Mark messages as read
+                -- M key does nothing on computers - removed messaging
+                -- Could add computer-specific function here in future
             elseif keyCode == keys.x and is_terminal then
                 -- X key to toggle silent mode on terminals
                 terminal_features.silent_mode = not terminal_features.silent_mode
