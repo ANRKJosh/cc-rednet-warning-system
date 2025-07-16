@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (actually version 33 apparently)
+-- Enhanced PoggishTown Warning System (pleaes please please please please)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -1247,6 +1247,9 @@ local function main()
                 -- I key for terminal info
                 showTerminalInfo()
                 drawScreen() -- Redraw main screen after terminal info
+            elseif keyCode == keys.n then
+                -- N key for changing name (both computers and terminals)
+                changeName()
             elseif keyCode == keys.m and is_terminal then
                 -- M key to toggle silent mode
                 terminal_features.silent_mode = not terminal_features.silent_mode
