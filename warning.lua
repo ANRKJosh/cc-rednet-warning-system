@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (apparently not done)
+-- Enhanced PoggishTown Warning System (we fix again)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -18,9 +18,10 @@ local config = {
     max_volume = 10.0,          -- Increased from 5.0 - very loud!
     base_volume = 2.0,          -- Increased from 1.0
     enable_relay = true,        -- enable message relaying
-    max_hops = 8,              -- Increased from 5 for better range
-    relay_delay = 0.05,        -- Reduced from 0.1 for faster relaying
-    update_url = "https://raw.githubusercontent.com/ANRKJosh/cc-rednet-warning-system/refs/heads/main/warning.lua"
+    max_hops = 3,              -- Reduced from 8 - ender modems have infinite range
+    relay_delay = 0.2,         -- Increased from 0.05 to reduce spam
+    update_url = "https://raw.githubusercontent.com/ANRKJosh/cc-rednet-warning-system/refs/heads/main/warning.lua",
+    use_ender_modems = false   -- Set to true if using ender modems
 }
 
 -- Network state tracking
@@ -144,7 +145,14 @@ local function relayMessage(msg)
     -- Don't relay if we've already seen this message
     if msg.message_id and isMessageSeen(msg.message_id) then return end
     
-    -- Add small delay to prevent network spam
+    -- Check if we're using ender modems - if so, be more conservative with relaying
+    local modem = peripheral.wrap(modem_side)
+    if modem and modem.isWireless and not modem.isWireless() then
+        -- This is an ender modem - reduce relaying since range is infinite
+        if msg.hops > 1 then return end -- Only relay once for ender modems
+    end
+    
+    -- Add delay to prevent network spam
     sleep(config.relay_delay)
     
     -- Increment hop count and relay
@@ -160,8 +168,11 @@ end
 
 -- Format time string
 -- Auto-update system
-local function checkForUpdates()
-    print("Checking for updates...")
+local function checkForUpdates(auto_mode)
+    if not auto_mode then
+        print("Checking for updates...")
+    end
+    
     local request = http.get(config.update_url)
     if request then
         local remote_content = request.readAll()
@@ -179,28 +190,49 @@ local function checkForUpdates()
         
         -- Compare content
         if remote_content ~= current_content then
-            print("Update available! Downloading...")
+            if auto_mode then
+                print("Auto-update: New version found! Downloading...")
+                log("Auto-update: Downloading new version")
+            else
+                print("Update available! Downloading...")
+            end
+            
             local file = fs.open("startup", "w")
             if file then
                 file.write(remote_content)
                 file.close()
-                print("Update downloaded! Restart to apply changes.")
-                print("Press U to restart now, or any other key to continue...")
-                local _, key = os.pullEvent("key")
-                if key == keys.u then
-                    print("Restarting...")
+                
+                if auto_mode then
+                    print("Auto-update: Update downloaded! Restarting in 3 seconds...")
+                    log("Auto-update: Update downloaded, restarting")
+                    sleep(3)
                     os.reboot()
+                else
+                    print("Update downloaded! Restart to apply changes.")
+                    print("Press U to restart now, or any other key to continue...")
+                    local _, key = os.pullEvent("key")
+                    if key == keys.u then
+                        print("Restarting...")
+                        os.reboot()
+                    end
                 end
             else
                 print("Failed to write update file.")
             end
         else
-            print("Already up to date!")
+            if not auto_mode then
+                print("Already up to date!")
+            end
         end
     else
-        print("Failed to check for updates (no internet?)")
+        if not auto_mode then
+            print("Failed to check for updates (no internet?)")
+        end
     end
-    sleep(2)
+    
+    if not auto_mode then
+        sleep(2)
+    end
 end
 
 local function getActiveNodeCount()
@@ -444,8 +476,8 @@ local function handleMessage(msg)
     -- Debug: Log what we're processing
     log("Processing message type: " .. (msg.type or "unknown") .. " from: " .. (msg.from or msg.computer_id or msg.origin_id or "unknown"))
     
-    -- Handle test messages first - always respond
-    if msg.type == "test" and msg.from ~= computer_id then
+    -- Handle test messages first - only respond to original test messages, not responses
+    if msg.type == "test" and msg.from ~= computer_id and msg.message and not string.find(msg.message, "Response from") then
         log("Responding to test message from " .. msg.from)
         local response = {
             type = "test",
@@ -454,6 +486,11 @@ local function handleMessage(msg)
             timestamp = os.time()
         }
         rednet.broadcast(response, protocol)
+        return
+    end
+    
+    -- Skip test responses (don't relay or process further)
+    if msg.type == "test" and msg.message and string.find(msg.message, "Response from") then
         return
     end
     
@@ -469,8 +506,8 @@ local function handleMessage(msg)
         return 
     end
     
-    -- Mark as seen and relay if appropriate (only for relay-enabled messages)
-    if msg.message_id then
+    -- Mark as seen and relay if appropriate (only for relay-enabled messages, NOT test messages)
+    if msg.message_id and msg.type ~= "test" then
         markMessageSeen(msg.message_id)
         relayMessage(msg)
     end
@@ -553,8 +590,8 @@ local function init()
             print("ERROR: Modem not in wireless mode!")
         end
     else
-        print("WARNING: This appears to be a wired modem!")
-        print("You need a WIRELESS modem for this to work!")
+        print("Ender modem detected (infinite range)")
+        print("Relay settings optimized for ender modems")
     end
     
     -- Wait a moment then send initial heartbeat
@@ -565,6 +602,10 @@ local function init()
     -- Wait a moment for any responses
     sleep(2)
     print("Starting system...")
+    
+    -- Auto-check for updates on startup
+    print("Auto-checking for updates...")
+    checkForUpdates(true) -- true = auto mode
 end
 
 -- Main loop
@@ -596,7 +637,7 @@ local function main()
             elseif keyCode == keys.t then
                 testNetwork()
             elseif keyCode == keys.u then
-                checkForUpdates()
+                checkForUpdates(false) -- false = manual mode
                 drawScreen()
             elseif not warning_active then
                 -- Any other key starts general alarm
@@ -618,8 +659,20 @@ local function main()
             elseif timer_id == alarm_timer then
                 -- Time to play next alarm cycle
                 if warning_active then
-                    playAlarmStep()
-                    alarm_timer = os.startTimer(1) -- Play alarm every 1 second
+                    -- Play alarm pattern continuously without blocking
+                    local pattern = alarm_patterns[current_alarm_type]
+                    local volume = config.base_volume + (config.volume_increment * math.min(30, (os.time() - (alarm_start_time or 0))))
+                    volume = math.min(config.max_volume, volume)
+                    
+                    -- Play all notes in the pattern quickly
+                    for _, sound in ipairs(pattern) do
+                        if warning_active and speaker then
+                            speaker.playNote("bass", volume, sound.note)
+                        end
+                    end
+                    
+                    -- Set next alarm cycle
+                    alarm_timer = os.startTimer(0.8) -- Play alarm every 0.8 seconds for continuous sound
                     
                     -- Check for auto-timeout
                     if alarm_start_time and (os.time() - alarm_start_time) > config.auto_stop_timeout then
