@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System
+-- Enhanced PoggishTown Warning System -v3 (Rednet Debugging)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -371,8 +371,12 @@ end
 
 -- Handle network message with relay support
 local function handleMessage(msg)
+    -- Debug: Log what we're processing
+    log("Processing message type: " .. (msg.type or "unknown") .. " from: " .. (msg.from or msg.computer_id or msg.origin_id or "unknown"))
+    
     -- Handle test messages first - always respond
     if msg.type == "test" and msg.from ~= computer_id then
+        log("Responding to test message from " .. msg.from)
         local response = {
             type = "test",
             from = computer_id,
@@ -384,10 +388,16 @@ local function handleMessage(msg)
     end
     
     -- For relay messages, skip our own messages
-    if msg.origin_id and msg.origin_id == computer_id then return end
+    if msg.origin_id and msg.origin_id == computer_id then 
+        log("Skipping own message")
+        return 
+    end
     
     -- Skip duplicate messages (only for messages that have message_id)
-    if msg.message_id and isMessageSeen(msg.message_id) then return end
+    if msg.message_id and isMessageSeen(msg.message_id) then 
+        log("Skipping duplicate message")
+        return 
+    end
     
     -- Mark as seen and relay if appropriate (only for relay-enabled messages)
     if msg.message_id then
@@ -396,6 +406,7 @@ local function handleMessage(msg)
     end
     
     if msg.type == "warning" then
+        log("Processing warning message: " .. msg.action)
         if msg.action == "start" and not warning_active then
             warning_active = true
             current_alarm_type = msg.alarm_type or "general"
@@ -412,6 +423,7 @@ local function handleMessage(msg)
             alarm_triggered_by = nil
         end
     elseif msg.type == "heartbeat" then
+        log("Processing heartbeat from " .. msg.computer_id)
         network_nodes[msg.computer_id] = {
             last_seen = os.time(),
             computer_id = msg.computer_id,
@@ -500,6 +512,8 @@ local function handleNetwork()
     while true do
         local _, _, _, _, msg, proto = os.pullEvent("rednet_message")
         if proto == protocol then
+            -- Debug: Log all received messages
+            log("Raw message received: " .. textutils.serialize(msg))
             handleMessage(msg)
         end
     end
