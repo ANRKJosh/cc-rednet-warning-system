@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System with iPhone-style Terminal GUI (V2 Phone)
+-- Enhanced PoggishTown Warning System with iPhone-style Terminal GUI (v2)
 -- Computers: Traditional keyboard interface
 -- Terminals: Touch-friendly GUI interface
 
@@ -14,7 +14,7 @@ local computer_id = os.getComputerID()
 local config = {
     heartbeat_interval = 30,
     max_offline_time = 90,
-    auto_stop_timeout = 300,Update warning.lua
+    auto_stop_timeout = 300,
     volume_increment = 0.3,
     max_volume = 15.0,
     base_volume = 3.0,
