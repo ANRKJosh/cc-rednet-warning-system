@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (errors happening again...)
+-- Enhanced PoggishTown Warning System (we keep trying)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -218,7 +218,9 @@ local function drawScreen()
     term.setBackgroundColor(colors.black)
     
     if is_terminal then
-        -- Compact terminal layout - fix the title display
+        -- Compact terminal layout - ensure clean title display
+        term.setTextColor(colors.white)
+        term.setBackgroundColor(colors.black)
         print("=============================")
         print("= POGGISHTOWN ALERT TERM   =")
         print("=============================")
@@ -279,12 +281,12 @@ local function drawScreen()
             term.setTextColor(colors.white)
         end
         
-        -- Terminal-specific status (only show if we have actual GPS coordinates OR good signal)
+        -- Terminal-specific status (only show if we have actual data)
         local coords = terminal_features and terminal_features.last_gps_coords or nil
-        local has_signal = terminal_features and terminal_features.connection_strength > 0
+        local signal_strength = terminal_features and terminal_features.connection_strength or 0
         
-        -- Only show status section if we have GPS coordinates or a signal
-        if coords or has_signal then
+        -- Only show status section if we have GPS coordinates OR signal strength > 1
+        if coords or signal_strength > 1 then
             print("")
             term.setTextColor(colors.cyan)
             
@@ -293,9 +295,9 @@ local function drawScreen()
                 print("GPS: " .. coords.x .. "," .. coords.y .. "," .. coords.z)
             end
             
-            -- Only show signal if we have any
-            if has_signal and terminal_features then
-                print("Signal: " .. string.rep("▐", terminal_features.connection_strength) .. string.rep("▁", 5 - terminal_features.connection_strength))
+            -- Only show signal if we have meaningful signal (more than just 1 bar)
+            if signal_strength > 1 then
+                print("Signal: " .. string.rep("▐", signal_strength) .. string.rep("▁", 5 - signal_strength))
             end
             
             term.setTextColor(colors.white)
