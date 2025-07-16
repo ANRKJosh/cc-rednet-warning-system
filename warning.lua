@@ -1,4 +1,4 @@
--- Enhanced PoggishTown Warning System (atleast the actual computers still work eh?)
+-- Enhanced PoggishTown Warning System (we're getting there)
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -181,7 +181,7 @@ local function showTerminalInfo()
     
     print("\nPress any key to return...")
     os.pullEvent("key")
-    drawScreen()
+    -- Don't call drawScreen here - let the main loop handle screen updates
 end
 
 -- Terminal notification with vibration
@@ -503,19 +503,21 @@ end
 local function drawScreen()
     term.clear()
     term.setCursorPos(1, 1)
+    term.setTextColor(colors.white)
+    term.setBackgroundColor(colors.black)
     
     if is_terminal then
         -- Compact terminal layout
         print("=============================")
         print("= POGGISHTOWN ALERT TERM   =")
         print("=============================")
+        print("") -- Add blank line
         
         -- Device info (compact)
-        term.setCursorPos(1, 4)
         print("ID: " .. computer_id .. " | Nodes: " .. getActiveNodeCount())
+        print("") -- Add blank line
         
         -- Status (compact)
-        term.setCursorPos(1, 6)
         if warning_active then
             term.setTextColor(colors.red)
             print("ALERT: " .. string.upper(current_alarm_type))
@@ -542,7 +544,7 @@ local function drawScreen()
         end
         
         term.setTextColor(colors.white)
-        term.setCursorPos(1, 14)
+        print("") -- Add blank line
         print("Terminal Controls:")
         print("G - General | E - Evacuation")
         print("C - Cancel  | S - Status")
@@ -551,29 +553,31 @@ local function drawScreen()
         
         -- Show update indicator for terminals
         if update_available then
-            term.setCursorPos(1, 18)
+            print("")
             term.setTextColor(colors.yellow)
             print("UPDATE READY! Press U")
             term.setTextColor(colors.white)
         end
         
         -- Terminal-specific status
-        term.setCursorPos(1, 20)
+        print("")
         term.setTextColor(colors.cyan)
         
         -- GPS and other status
-        local coords = terminal_features.last_gps_coords
+        local coords = terminal_features and terminal_features.last_gps_coords or nil
         if coords then
             print("GPS: " .. coords.x .. "," .. coords.y .. "," .. coords.z)
         else
             print("GPS: Searching...")
         end
         
-        print("Signal: " .. string.rep("▐", terminal_features.connection_strength) .. string.rep("▁", 5 - terminal_features.connection_strength))
-        
-        if terminal_features.silent_mode then
-            term.setTextColor(colors.orange)
-            print("SILENT MODE")
+        if terminal_features then
+            print("Signal: " .. string.rep("▐", terminal_features.connection_strength) .. string.rep("▁", 5 - terminal_features.connection_strength))
+            
+            if terminal_features.silent_mode then
+                term.setTextColor(colors.orange)
+                print("SILENT MODE")
+            end
         end
         
         term.setTextColor(colors.white)
@@ -582,13 +586,13 @@ local function drawScreen()
         print("===============================")
         print("= PoggishTown Warning System  =")
         print("===============================")
+        print("") -- Add blank line
         
         -- Computer info
-        term.setCursorPos(1, 4)
         print("ID: " .. computer_id .. " | Nodes: " .. getActiveNodeCount())
+        print("") -- Add blank line
         
         -- Status
-        term.setCursorPos(1, 6)
         if warning_active then
             term.setTextColor(colors.red)
             print("STATUS: !! WARNING ACTIVE !!")
@@ -617,7 +621,7 @@ local function drawScreen()
         end
         
         term.setTextColor(colors.white)
-        term.setCursorPos(1, 16)
+        print("") -- Add blank line
         print("Controls:")
         print("Any key - General alarm")
         print("E - Evacuation alarm")
@@ -626,7 +630,7 @@ local function drawScreen()
         
         -- Show update indicator
         if update_available then
-            term.setCursorPos(1, 22)
+            print("")
             term.setTextColor(colors.yellow)
             print("UPDATE AVAILABLE! Press U to install")
             term.setTextColor(colors.white)
@@ -1092,6 +1096,7 @@ local function main()
             elseif keyCode == keys.i and is_terminal then
                 -- I key for terminal info
                 showTerminalInfo()
+                drawScreen() -- Redraw main screen after terminal info
             elseif keyCode == keys.m and is_terminal then
                 -- M key to toggle silent mode
                 terminal_features.silent_mode = not terminal_features.silent_mode
