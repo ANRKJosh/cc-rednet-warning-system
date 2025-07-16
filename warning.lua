@@ -1,4 +1,4 @@
--- Enhanced Two-Way Warning System
+-- Enhanced PoggishTown Warning System
 -- Speaker + Modem required (expected on left/right)
 -- Redstone output on BACK when alarm is active
 
@@ -123,7 +123,6 @@ local function relayMessage(msg)
     msg.hops = msg.hops + 1
     msg.relayed_by = computer_id
     
-    print("Relaying message (hop " .. msg.hops .. "): " .. msg.type)
     rednet.broadcast(msg, protocol)
     
     if msg.message_id then
@@ -156,16 +155,15 @@ local function drawScreen()
     term.clear()
     term.setCursorPos(1, 1)
     print("===============================")
-    print("= Two-Way Warning System      =")
+    print("= PoggishTown Warning System  =")
     print("===============================")
     
     -- Computer info
     term.setCursorPos(1, 4)
-    print("Computer ID: " .. computer_id)
-    print("Active Nodes: " .. getActiveNodeCount())
+    print("ID: " .. computer_id .. " | Nodes: " .. getActiveNodeCount())
     
     -- Status
-    term.setCursorPos(1, 7)
+    term.setCursorPos(1, 6)
     if warning_active then
         term.setTextColor(colors.red)
         print("STATUS: !! WARNING ACTIVE !!")
@@ -173,10 +171,11 @@ local function drawScreen()
         print("Type: " .. string.upper(current_alarm_type))
         term.setTextColor(colors.white)
         if alarm_start_time then
-            print(getTimeString())
+            local t = textutils.formatTime(alarm_start_time, true)
+            print("Started: " .. t)
         end
         if alarm_triggered_by then
-            print("Triggered by: Computer " .. alarm_triggered_by)
+            print("By: Computer " .. alarm_triggered_by)
         end
         
         -- Auto-stop countdown
@@ -184,25 +183,21 @@ local function drawScreen()
             local elapsed = os.time() - alarm_start_time
             local remaining = config.auto_stop_timeout - elapsed
             if remaining > 0 then
-                print("Auto-stop in: " .. math.floor(remaining) .. "s")
+                print("Auto-stop: " .. math.floor(remaining) .. "s")
             end
         end
     else
         term.setTextColor(colors.green)
-        print("STATUS: System Idle")
+        print("STATUS: System Ready")
     end
     
     term.setTextColor(colors.white)
-    term.setCursorPos(1, 15)
+    term.setCursorPos(1, 14)
     print("Controls:")
     print("Any key - General alarm")
     print("E - Evacuation alarm")
     print("C - Cancel alarm")
-    print("S - Show status")
-    print("L - View logs")
-    
-    term.setCursorPos(1, 22)
-    print("System Ready. Listening for events...")
+    print("S - Status | L - Logs | T - Test")
 end
 
 -- Broadcast over network with source ID and relay support
@@ -232,7 +227,6 @@ local function sendHeartbeat()
         message_id = generateMessageId(),
         hops = 0
     }
-    print("Sending heartbeat from computer " .. computer_id)
     rednet.broadcast(message, protocol)
     markMessageSeen(message.message_id)
 end
@@ -293,7 +287,57 @@ local function showStatus()
     drawScreen()
 end
 
--- Show recent logs
+-- Test network connectivity
+local function testNetwork()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== Network Test ===")
+    print("Computer ID: " .. computer_id)
+    print("Protocol: " .. protocol)
+    print("Modem side: " .. modem_side)
+    
+    -- Check modem type
+    local modem = peripheral.wrap(modem_side)
+    if modem.isWireless then
+        print("Modem type: Wireless")
+    else
+        print("Modem type: Wired (THIS WON'T WORK!)")
+    end
+    
+    print("\nSending test broadcast...")
+    local test_msg = {
+        type = "test",
+        from = computer_id,
+        message = "Hello from " .. computer_id,
+        timestamp = os.time()
+    }
+    rednet.broadcast(test_msg, protocol)
+    
+    print("Listening for responses (5 seconds)...")
+    local responses = 0
+    local start_time = os.clock()
+    
+    while (os.clock() - start_time) < 5 do
+        local sender_id, message, proto = rednet.receive(protocol, 1)
+        if sender_id and message and message.type == "test" and message.from ~= computer_id then
+            print("Response from Computer " .. message.from)
+            responses = responses + 1
+        end
+    end
+    
+    print("\nTest complete. Received " .. responses .. " responses.")
+    if responses == 0 then
+        print("No responses - check:")
+        print("1. Other computers running?")
+        print("2. Using wireless modems?")
+        print("3. Same protocol name?")
+        print("4. Within 64 block range?")
+    end
+    
+    print("\nPress any key to return...")
+    os.pullEvent("key")
+    drawScreen()
+end
 local function showLogs()
     term.clear()
     term.setCursorPos(1, 1)
@@ -338,8 +382,6 @@ local function handleMessage(msg)
         markMessageSeen(msg.message_id)
     end
     
-    print("Received message: " .. msg.type .. " (hop " .. (msg.hops or 0) .. ")")
-    
     -- Relay message to extend range
     relayMessage(msg)
     
@@ -360,12 +402,15 @@ local function handleMessage(msg)
             alarm_triggered_by = nil
         end
     elseif msg.type == "heartbeat" then
-        print("Received heartbeat from computer " .. msg.computer_id)
         network_nodes[msg.computer_id] = {
             last_seen = os.time(),
             computer_id = msg.computer_id,
             hops = msg.hops or 0
         }
+        -- Only update screen if we're on the main screen, not status/logs
+        if term.getCursorPos() == 1 then
+            drawScreen()
+        end
     end
 end
 
@@ -394,6 +439,20 @@ local function init()
     print("Computer ID: " .. computer_id)
     print("Protocol: " .. protocol)
     
+    -- Check what type of modem we have
+    local modem = peripheral.wrap(modem_side)
+    if modem.isWireless then
+        print("Wireless modem detected")
+        if modem.isWireless() then
+            print("Wireless functionality confirmed")
+        else
+            print("ERROR: Modem not in wireless mode!")
+        end
+    else
+        print("WARNING: This appears to be a wired modem!")
+        print("You need a WIRELESS modem for this to work!")
+    end
+    
     -- Wait a moment then send initial heartbeat
     sleep(1)
     print("Sending initial heartbeat...")
@@ -401,6 +460,8 @@ local function init()
     
     -- Wait a moment for any responses
     sleep(2)
+    print("Press any key to continue...")
+    os.pullEvent("key")
 end
 
 -- Input handler function
@@ -415,6 +476,8 @@ local function handleInput()
             showStatus()
         elseif keyCode == keys.l then
             showLogs()
+        elseif keyCode == keys.t then
+            testNetwork()
         elseif not warning_active then
             -- Any other key starts general alarm
             startAlarm("general")
