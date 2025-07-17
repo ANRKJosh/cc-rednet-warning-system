@@ -1,5 +1,5 @@
 -- Enhanced PoggishTown Warning System with Terminal GUI
--- we fix the phone please?
+-- Fixed version with better visuals and proper function order
 
 local protocol = "poggishtown_warning"
 local warning_active = false
