@@ -1,5 +1,5 @@
 -- Enhanced PoggishTown Warning System with Terminal GUI
--- please
+-- we hope for not only a working gui now, but for everything to be working.
 
 local protocol = "poggishtown_warning"
 local warning_active = false
@@ -81,8 +81,11 @@ local function loadCustomName()
     if fs.exists("poggish_config") then
         local file = fs.open("poggish_config", "r")
         if file then
-            config.custom_name = file.readAll()
+            local content = file.readAll()
             file.close()
+            if content and content ~= "" then
+                config.custom_name = content
+            end
         end
     end
 end
@@ -166,6 +169,11 @@ local function startAlarm(alarm_type)
         alarm_start_time = os.time()
         alarm_triggered_by = computer_id
         
+        -- Play alarm sound
+        if speaker and not terminal_features.silent_mode then
+            speaker.playSound("minecraft:block.note_block.pling", 3, 2)
+        end
+        
         if not is_terminal then
             redstone.setOutput(redstone_output_side, true)
         end
@@ -221,12 +229,13 @@ local function drawAppIcon(x, y, w, h, color, text_color, icon, label)
         write(string.rep(" ", w))
     end
     
-    -- Draw icon
+    -- Draw icon (handle both string and number)
     term.setTextColor(text_color)
+    local icon_text = tostring(icon)
     local icon_y = y + 1
-    local icon_x = x + math.floor((w - #icon) / 2)
+    local icon_x = x + math.floor((w - #icon_text) / 2)
     term.setCursorPos(icon_x, icon_y)
-    write(icon)
+    write(icon_text)
     
     -- Draw label
     if label then
@@ -428,7 +437,7 @@ local function drawContactsScreen()
             local name = node.display_name or ("Node " .. id)
             if #name > 8 then name = name:sub(1, 8) end
             
-            drawAppIcon(2, y, 12, 3, color, colors.white, id, name)
+            drawAppIcon(2, y, 12, 3, color, colors.white, tostring(id), name)
             y = y + 4
             node_count = node_count + 1
         end
@@ -778,7 +787,8 @@ local function main()
             elseif keyCode == keys.q and is_terminal then
                 print("Terminal shutting down...")
                 break
-            elseif not warning_active and not is_terminal then
+            elseif not warning_active and not is_terminal and not gui_state.typing_mode then
+                -- Only trigger alarm on non-terminals when not in typing mode
                 startAlarm("general")
                 drawScreen()
             end
