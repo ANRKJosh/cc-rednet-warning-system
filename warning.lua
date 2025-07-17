@@ -1,5 +1,5 @@
 -- Enhanced PoggishTown Warning System with Terminal GUI
--- We fix the phone
+-- we fix the phone please?
 
 local protocol = "poggishtown_warning"
 local warning_active = false
@@ -483,6 +483,7 @@ end
     term.setCursorPos(2, 15)
     local device_type = is_terminal and "Terminal" or "Computer"
     write("Type: " .. device_type)
+end
 end
 
 local function handleTouch(x, y)
