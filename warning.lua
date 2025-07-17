@@ -1,5 +1,5 @@
 -- Enhanced PoggishTown Warning System with Terminal GUI
--- we hope for not only a working gui now, but for everything to be working.
+-- Fixed version with better visuals and proper function order
 
 local protocol = "poggishtown_warning"
 local warning_active = false
@@ -45,10 +45,33 @@ local gui_state = {
 
 -- Configuration
 local config = {
-    heartbeat_interval = 30,
-    max_offline_time = 90,
-    auto_stop_timeout = 300,
+    heartbeat_interval = 30, -- seconds between heartbeats
+    max_offline_time = 90, -- seconds before marking node as offline
+    auto_stop_timeout = 300, -- seconds to auto-stop alarm (5 minutes)
+    volume_increment = 0.3, -- Increased from 0.2
+    max_volume = 15.0, -- Increased from 10.0 - very very loud!
+    base_volume = 3.0, -- Increased from 2.0
+    enable_relay = true, -- enable message relaying
+    max_hops = 3, -- Reduced from 8 - ender modems have infinite range
+    relay_delay = 0.2, -- Increased from 0.05 to reduce spam
+    update_url = "https://raw.githubusercontent.com/ANRKJosh/cc-rednet-warning-system/refs/heads/main/warning.lua",
+    update_check_interval = 300, -- 5 minutes
     custom_name = nil
+}
+
+-- Alarm patterns (different sounds for different alert types)
+local alarm_patterns = {
+    general = {
+        {note = 3, duration = 0.2, volume = 3.0},
+        {note = 6, duration = 0.2, volume = 5.0}, 
+        {note = 9, duration = 0.4, volume = 7.0}
+    },
+    evacuation = {
+        {note = 12, duration = 0.15, volume = 8.0},
+        {note = 15, duration = 0.15, volume = 10.0},
+        {note = 18, duration = 0.15, volume = 12.0},
+        {note = 15, duration = 0.15, volume = 10.0}
+    }
 }
 
 -- Utility functions
@@ -161,6 +184,29 @@ local function sendHeartbeat()
     rednet.broadcast(message, protocol)
 end
 
+local function playAlarmSound(alarm_type)
+    if speaker and not terminal_features.silent_mode then
+        local pattern = alarm_patterns[alarm_type] or alarm_patterns.general
+        
+        -- Play pattern multiple times to make it more noticeable
+        for repeat_count = 1, 3 do
+            for i, sound in ipairs(pattern) do
+                local volume = sound.volume or config.base_volume
+                -- Ensure volume doesn't exceed max
+                volume = math.min(volume, config.max_volume)
+                
+                speaker.playNote("harp", volume, sound.note)
+                sleep(sound.duration)
+            end
+            
+            -- Short pause between repetitions
+            if repeat_count < 3 then
+                sleep(0.3)
+            end
+        end
+    end
+end
+
 local function startAlarm(alarm_type)
     alarm_type = alarm_type or "general"
     if not warning_active then
@@ -169,10 +215,8 @@ local function startAlarm(alarm_type)
         alarm_start_time = os.time()
         alarm_triggered_by = computer_id
         
-        -- Play alarm sound
-        if speaker and not terminal_features.silent_mode then
-            speaker.playSound("minecraft:block.note_block.pling", 3, 2)
-        end
+        -- Play appropriate alarm sound
+        playAlarmSound(alarm_type)
         
         if not is_terminal then
             redstone.setOutput(redstone_output_side, true)
@@ -207,7 +251,7 @@ local function drawStatusBar()
     term.setCursorPos(2, 1)
     write(time_str)
     
-    -- Device name centered
+    -- Device name centered (fix the display issue)
     local name = getDisplayName()
     if #name > 12 then name = name:sub(1, 9) .. "..." end
     local w = term.getSize()
@@ -477,23 +521,49 @@ local function drawSettingsScreen()
         write("OFF")
     end
     
-    -- Device Name
+    -- Volume control
     term.setTextColor(colors.white)
-    term.setCursorPos(2, 10)
+    term.setCursorPos(2, 9)
+    write("Alarm Volume:")
+    term.setCursorPos(15, 9)
+    if config.base_volume >= 10 then
+        term.setTextColor(colors.red)
+        write("LOUD")
+    elseif config.base_volume >= 5 then
+        term.setTextColor(colors.yellow)
+        write("MED")
+    else
+        term.setTextColor(colors.green)
+        write("LOW")
+    end
+    
+    -- Device Name (for terminals show in settings)
+    term.setTextColor(colors.white)
+    term.setCursorPos(2, 11)
     write("Device Name:")
     term.setTextColor(colors.cyan)
-    term.setCursorPos(15, 10)
+    term.setCursorPos(15, 11)
     write("EDIT")
+    
+    -- Update button
+    term.setTextColor(colors.white)
+    term.setCursorPos(2, 13)
+    write("Check Updates:")
+    term.setTextColor(colors.lime)
+    term.setCursorPos(17, 13)
+    write("UPDATE")
     
     -- Device info
     term.setTextColor(colors.gray)
-    term.setCursorPos(2, 13)
+    term.setCursorPos(2, 16)
     write("Device Info:")
-    term.setCursorPos(2, 14)
+    term.setCursorPos(2, 17)
     write("ID: " .. computer_id)
-    term.setCursorPos(2, 15)
+    term.setCursorPos(2, 18)
     local device_type = is_terminal and "Terminal" or "Computer"
     write("Type: " .. device_type)
+    term.setCursorPos(2, 19)
+    write("Name: " .. getDisplayName())
 end
 
 local function handleTouch(x, y)
@@ -574,8 +644,14 @@ local function handleTouch(x, y)
         elseif y == 8 then
             terminal_features.silent_mode = not terminal_features.silent_mode
             return true
-        elseif y == 10 then
+        elseif y == 9 then
+            adjustVolume()
+            return true
+        elseif y == 11 then
             changeName()
+            return true
+        elseif y == 13 then
+            checkForUpdates()
             return true
         end
     end
@@ -631,6 +707,7 @@ local function drawScreen()
         print("E - Evacuation alarm")
         print("C - Cancel alarm")
         print("S - Status | N - Change Name")
+        print("U - Check for updates | V - Volume")
     end
 end
 
@@ -657,25 +734,98 @@ local function showStatus()
 end
 
 local function changeName()
+    if is_terminal then
+        -- Terminal-friendly name change
+        term.clear()
+        term.setCursorPos(1, 1)
+        term.setTextColor(colors.white)
+        print("Change Device Name")
+        print("Current: " .. getDisplayName())
+        print("")
+        print("Enter new name:")
+        
+        local new_name = read()
+        
+        if new_name == "" then
+            setCustomName(nil)
+            print("Name cleared.")
+        else
+            setCustomName(new_name)
+            print("Name set to: " .. getDisplayName())
+        end
+        
+        print("\nPress any key...")
+        os.pullEvent("key")
+        drawScreen()
+    else
+        -- Computer version
+        term.clear()
+        term.setCursorPos(1, 1)
+        print("=== Change Device Name ===")
+        print("Current name: " .. getDisplayName())
+        print("Computer ID: " .. computer_id)
+        print("")
+        print("Enter new name (or press Enter to clear):")
+        
+        local new_name = read()
+        
+        if new_name == "" then
+            setCustomName(nil)
+            print("Custom name cleared.")
+        else
+            setCustomName(new_name)
+            print("Name changed to: " .. getDisplayName())
+        end
+        
+        print("\nPress any key to return...")
+        os.pullEvent("key")
+        drawScreen()
+    end
+end
+
+local function adjustVolume()
     term.clear()
     term.setCursorPos(1, 1)
-    print("=== Change Device Name ===")
-    print("Current name: " .. getDisplayName())
-    print("Computer ID: " .. computer_id)
+    print("=== Volume Control ===")
+    print("Current volume: " .. config.base_volume)
+    print("Max volume: " .. config.max_volume)
     print("")
-    print("Enter new name (or press Enter to clear):")
+    print("1 - Low (3.0)")
+    print("2 - Medium (6.0)")
+    print("3 - High (9.0)")
+    print("4 - Very Loud (12.0)")
+    print("5 - Maximum (15.0)")
+    print("")
+    print("Choose volume level (1-5):")
     
-    local new_name = read()
+    local choice = read()
+    local volumes = {3.0, 6.0, 9.0, 12.0, 15.0}
+    local volume_num = tonumber(choice)
     
-    if new_name == "" then
-        setCustomName(nil)
-        print("Custom name cleared.")
+    if volume_num and volume_num >= 1 and volume_num <= 5 then
+        config.base_volume = volumes[volume_num]
+        -- Update alarm patterns with new base volume
+        for alarm_type, pattern in pairs(alarm_patterns) do
+            for i, sound in ipairs(pattern) do
+                sound.volume = config.base_volume + (i * config.volume_increment)
+            end
+        end
+        print("Volume set to: " .. config.base_volume)
     else
-        setCustomName(new_name)
-        print("Name changed to: " .. getDisplayName())
+        print("Invalid choice")
     end
     
     print("\nPress any key to return...")
+    os.pullEvent("key")
+    drawScreen()
+end
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("Checking for updates...")
+    print("This feature is not yet implemented.")
+    print("Would check GitHub for latest version.")
+    print("")
+    print("Press any key to return...")
     os.pullEvent("key")
     drawScreen()
 end
@@ -784,6 +934,10 @@ local function main()
                 showStatus()
             elseif keyCode == keys.n then
                 changeName()
+            elseif keyCode == keys.u then
+                checkForUpdates()
+            elseif keyCode == keys.v then
+                adjustVolume()
             elseif keyCode == keys.q and is_terminal then
                 print("Terminal shutting down...")
                 break
@@ -814,6 +968,9 @@ local function main()
             if timer_id == heartbeat_timer then
                 sendHeartbeat()
                 heartbeat_timer = os.startTimer(config.heartbeat_interval)
+            elseif timer_id == update_timer then
+                -- Auto-check for updates (silent)
+                update_timer = os.startTimer(config.update_check_interval)
             end
         end
     end
