@@ -1,5 +1,5 @@
 -- Enhanced PoggishTown Warning System with Terminal GUI
--- Fixed version with better visuals and proper function order
+-- please
 
 local protocol = "poggishtown_warning"
 local warning_active = false
@@ -440,6 +440,8 @@ local function drawContactsScreen()
         write("No other nodes online")
     end
 end
+
+local function drawSettingsScreen()
     term.setBackgroundColor(colors.black)
     term.clear()
     drawStatusBar()
@@ -483,7 +485,6 @@ end
     term.setCursorPos(2, 15)
     local device_type = is_terminal and "Terminal" or "Computer"
     write("Type: " .. device_type)
-end
 end
 
 local function handleTouch(x, y)
