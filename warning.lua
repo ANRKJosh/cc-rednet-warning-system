@@ -1,5 +1,5 @@
 -- Enhanced PoggishTown Warning System with Terminal GUI
--- 300
+-- please once again
 
 local protocol = "poggishtown_warning"
 local warning_active = false
@@ -819,6 +819,8 @@ local function adjustVolume()
     os.pullEvent("key")
     drawScreen()
 end
+
+local function checkForUpdates()
     term.clear()
     term.setCursorPos(1, 1)
     print("Checking for updates...")
