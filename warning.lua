@@ -1,5 +1,5 @@
 -- Enhanced PoggishTown Warning System with Terminal GUI
--- Fixed version with better visuals and proper function order
+-- 300
 
 local protocol = "poggishtown_warning"
 local warning_active = false
