@@ -100,6 +100,42 @@ local function setCustomName(name)
     end
 end
 
+local function playAlarmSound(alarm_type)
+    if speaker and not (is_terminal and terminal_features.silent_mode) then
+        local pattern = alarm_patterns[alarm_type] or alarm_patterns.general
+        
+        -- Play pattern multiple times to make it more noticeable
+        for repeat_count = 1, 3 do
+            for i, sound in ipairs(pattern) do
+                local volume = sound.volume or config.base_volume
+                -- Ensure volume doesn't exceed max
+                volume = math.min(volume, config.max_volume)
+                
+                speaker.playNote("harp", volume, sound.note)
+                sleep(sound.duration)
+            end
+            
+            -- Short pause between repetitions
+            if repeat_count < 3 then
+                sleep(0.3)
+            end
+        end
+    end
+    
+    -- Terminal flashing effect (unless silent mode)
+    if is_terminal and not terminal_features.silent_mode then
+        for flash = 1, 6 do
+            term.setBackgroundColor(colors.red)
+            term.clear()
+            sleep(0.2)
+            term.setBackgroundColor(colors.black)
+            term.clear()
+            sleep(0.2)
+        end
+        drawScreen()
+    end
+end
+
 local function loadCustomName()
     if fs.exists("poggish_config") then
         local file = fs.open("poggish_config", "r")
@@ -184,42 +220,6 @@ local function sendHeartbeat()
     rednet.broadcast(message, protocol)
 end
 
-local function playAlarmSound(alarm_type)
-    if speaker and not (is_terminal and terminal_features.silent_mode) then
-        local pattern = alarm_patterns[alarm_type] or alarm_patterns.general
-        
-        -- Play pattern multiple times to make it more noticeable
-        for repeat_count = 1, 3 do
-            for i, sound in ipairs(pattern) do
-                local volume = sound.volume or config.base_volume
-                -- Ensure volume doesn't exceed max
-                volume = math.min(volume, config.max_volume)
-                
-                speaker.playNote("harp", volume, sound.note)
-                sleep(sound.duration)
-            end
-            
-            -- Short pause between repetitions
-            if repeat_count < 3 then
-                sleep(0.3)
-            end
-        end
-    end
-    
-    -- Terminal flashing effect (unless silent mode)
-    if is_terminal and not terminal_features.silent_mode then
-        for flash = 1, 6 do
-            term.setBackgroundColor(colors.red)
-            term.clear()
-            sleep(0.2)
-            term.setBackgroundColor(colors.black)
-            term.clear()
-            sleep(0.2)
-        end
-        drawScreen()
-    end
-end
-
 local function startAlarm(alarm_type)
     alarm_type = alarm_type or "general"
     if not warning_active then
@@ -228,14 +228,14 @@ local function startAlarm(alarm_type)
         alarm_start_time = os.time()
         alarm_triggered_by = computer_id
         
-        -- Play appropriate alarm sound
-        playAlarmSound(alarm_type)
-        
         if not is_terminal then
             redstone.setOutput(redstone_output_side, true)
         end
         
         broadcast("start", alarm_type)
+        
+        -- Play alarm sound and effects after broadcast
+        playAlarmSound(alarm_type)
     end
 end
 
