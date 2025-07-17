@@ -1,5 +1,5 @@
 -- Enhanced PoggishTown Warning System with Terminal GUI
--- please once again
+-- Fixed version with better visuals and proper function order
 
 local protocol = "poggishtown_warning"
 local warning_active = false
@@ -30,7 +30,7 @@ local current_alarm_type = "general"
 
 -- Terminal features
 local terminal_features = {
-    silent_mode = false,
+    silent_mode = false, -- turns off flashing/vibration on terminals
     connection_strength = 0
 }
 
@@ -185,7 +185,7 @@ local function sendHeartbeat()
 end
 
 local function playAlarmSound(alarm_type)
-    if speaker and not terminal_features.silent_mode then
+    if speaker and not (is_terminal and terminal_features.silent_mode) then
         local pattern = alarm_patterns[alarm_type] or alarm_patterns.general
         
         -- Play pattern multiple times to make it more noticeable
@@ -204,6 +204,19 @@ local function playAlarmSound(alarm_type)
                 sleep(0.3)
             end
         end
+    end
+    
+    -- Terminal flashing effect (unless silent mode)
+    if is_terminal and not terminal_features.silent_mode then
+        for flash = 1, 6 do
+            term.setBackgroundColor(colors.red)
+            term.clear()
+            sleep(0.2)
+            term.setBackgroundColor(colors.black)
+            term.clear()
+            sleep(0.2)
+        end
+        drawScreen()
     end
 end
 
@@ -509,35 +522,39 @@ local function drawSettingsScreen()
     term.setCursorPos(2, 5)
     write("SETTINGS")
     
-    -- Silent Mode toggle
-    term.setCursorPos(2, 8)
-    write("Silent Mode:")
-    term.setCursorPos(15, 8)
-    if terminal_features.silent_mode then
-        term.setTextColor(colors.green)
-        write("ON")
+    -- Silent Mode toggle (for terminals - controls flashing)
+    if is_terminal then
+        term.setCursorPos(2, 8)
+        write("Silent Mode:")
+        term.setCursorPos(15, 8)
+        if terminal_features.silent_mode then
+            term.setTextColor(colors.green)
+            write("ON")
+        else
+            term.setTextColor(colors.red)
+            write("OFF")
+        end
+        term.setTextColor(colors.gray)
+        term.setCursorPos(2, 9)
+        write("(Disables flashing)")
     else
-        term.setTextColor(colors.red)
-        write("OFF")
+        -- Volume control (computers only)
+        term.setCursorPos(2, 8)
+        write("Alarm Volume:")
+        term.setCursorPos(15, 8)
+        if config.base_volume >= 10 then
+            term.setTextColor(colors.red)
+            write("LOUD")
+        elseif config.base_volume >= 5 then
+            term.setTextColor(colors.yellow)
+            write("MED")
+        else
+            term.setTextColor(colors.green)
+            write("LOW")
+        end
     end
     
-    -- Volume control
-    term.setTextColor(colors.white)
-    term.setCursorPos(2, 9)
-    write("Alarm Volume:")
-    term.setCursorPos(15, 9)
-    if config.base_volume >= 10 then
-        term.setTextColor(colors.red)
-        write("LOUD")
-    elseif config.base_volume >= 5 then
-        term.setTextColor(colors.yellow)
-        write("MED")
-    else
-        term.setTextColor(colors.green)
-        write("LOW")
-    end
-    
-    -- Device Name (for terminals show in settings)
+    -- Device Name
     term.setTextColor(colors.white)
     term.setCursorPos(2, 11)
     write("Device Name:")
@@ -642,16 +659,24 @@ local function handleTouch(x, y)
             gui_state.current_screen = "home"
             return true
         elseif y == 8 then
-            terminal_features.silent_mode = not terminal_features.silent_mode
-            return true
-        elseif y == 9 then
-            adjustVolume()
+            if is_terminal then
+                terminal_features.silent_mode = not terminal_features.silent_mode
+            else
+                -- Volume control for computers only
+                if adjustVolume then
+                    adjustVolume()
+                end
+            end
             return true
         elseif y == 11 then
-            changeName()
+            if changeName then
+                changeName()
+            end
             return true
         elseif y == 13 then
-            checkForUpdates()
+            if checkForUpdates then
+                checkForUpdates()
+            end
             return true
         end
     end
@@ -935,11 +960,17 @@ local function main()
             elseif keyCode == keys.s then
                 showStatus()
             elseif keyCode == keys.n then
-                changeName()
+                if changeName then
+                    changeName()
+                end
             elseif keyCode == keys.u then
-                checkForUpdates()
+                if checkForUpdates then
+                    checkForUpdates()
+                end
             elseif keyCode == keys.v then
-                adjustVolume()
+                if adjustVolume then
+                    adjustVolume()
+                end
             elseif keyCode == keys.q and is_terminal then
                 print("Terminal shutting down...")
                 break
