@@ -63,6 +63,19 @@ local security_nodes = {}
 local active_alarms = {}
 
 -- Data management
+
+-- Debug logging function (must be first!)
+local function addDebugLog(message)
+    if not debug_log then
+        debug_log = {}
+    end
+    table.insert(debug_log, os.time() .. ": " .. message)
+    -- Keep only last 5 entries
+    while #debug_log > 5 do
+        table.remove(debug_log, 1)
+    end
+end
+
 local function loadData()
     -- Load config
     if fs.exists(CONFIG_FILE) then
