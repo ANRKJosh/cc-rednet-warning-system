@@ -355,6 +355,27 @@ local function sendPasswordResponse(user_id, password_attempt)
     end
     
     log("Password verification " .. (is_correct and "SUCCESS" or "FAILED") .. " for user " .. user_id .. " (3 broadcasts sent)", "INFO")
+    
+    -- TEST: Send auth result disguised as a working message type
+    local disguised_response = {
+        type = "server_announcement",  -- Use a type that works
+        server_name = config.server_name,
+        server_id = computer_id,
+        auth_result_for_user = user_id,  -- Hidden auth data
+        auth_success = is_correct,
+        auth_expires = is_correct and (os.time() + 3600) or nil,
+        capabilities = { auth_response = true }
+    }
+    
+    local success, error_msg = pcall(function()
+        rednet.broadcast(disguised_response, PHONE_PROTOCOL)
+    end)
+    
+    if success then
+        log("Disguised auth response sent as server_announcement for user " .. user_id, "DEBUG")
+    else
+        log("Failed to send disguised auth response: " .. tostring(error_msg), "ERROR")
+    end
 end
 
 -- Enhanced cleanup function for performance
