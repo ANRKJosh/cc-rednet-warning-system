@@ -2,7 +2,58 @@
 -- Modern messaging and communication system
 -- Protocol: pogphone (separate from security system)
 
+local function handleEmergencyScreenInput()
+    local input = read()
+    
+    if input:lower() == "b" then
+        current_screen = "main"
+    elseif input:lower() == "r" then
+        -- Refresh by staying on same screen
+        return
+    elseif config.allow_emergency_alerts then
+        if input:lower() == "g" then
+            local success, message = sendSecurityAlert("general")
+            print("")
+            if success then
+                print("GENERAL ALERT SENT!")
+            else
+                print("Failed: " .. message)
+            end
+            sleep(2)
+        elseif input:lower() == "e" then
+            local success, message = sendSecurityAlert("evacuation")
+            print("")
+            if success then
+                print("EVACUATION ALERT SENT!")
+            else
+                print("Failed: " .. message)
+            end
+            sleep(2)
+        elseif input:lower() == "l" then
+            local success, message = sendSecurityAlert("lockdown")
+            print("")
+            if success then
+                print("LOCKDOWN ALERT SENT!")
+            else
+                print("Failed: " .. message)
+            end
+            sleep(2)
+        elseif input:lower() == "c" then
+            local success, message = sendSecurityCancel()
+            print("")
+            if success then
+                print("CANCEL SIGNAL SENT!")
+            else
+                print("Failed: " .. message)
+            end
+            sleep(2)
+        end
+    end
+endlocal function handleMainScreenInput()
+    local input = read()
+
 local PHONE_PROTOCOL = "pogphone"
+local SECURITY_PROTOCOL = "pogalert"  -- Add security protocol
 local CONFIG_FILE = "pogphone_config"
 local CONTACTS_FILE = "pogphone_contacts"
 local MESSAGES_FILE = "pogphone_messages"
@@ -35,7 +86,10 @@ local config = {
     notification_sound = true,
     vibrate_on_message = true,
     compact_mode = false,
-    update_url = "https://raw.githubusercontent.com/your-repo/poggishtown-phone.lua"
+    update_url = "https://raw.githubusercontent.com/your-repo/poggishtown-phone.lua",
+    -- Security integration
+    security_password = "poggishtown2025",  -- Default security password
+    allow_emergency_alerts = true           -- Allow sending emergency alerts
 }
 
 -- Global state
@@ -51,6 +105,8 @@ local messages = {}
 local unread_count = 0
 local current_screen = "main"
 local selected_contact = nil
+local security_nodes = {}  -- Track security system nodes
+local active_alarms = {}   -- Track active alarms
 
 -- Data management
 local function loadData()
@@ -145,6 +201,60 @@ local function initializeModem()
         end
     end
     return false
+end
+
+-- Security integration functions
+local function hashPassword(password)
+    local hash = 0
+    for i = 1, #password do
+        hash = (hash * 31 + string.byte(password, i)) % 1000000
+    end
+    return tostring(hash)
+end
+
+local function sendSecurityAlert(alarm_type)
+    if not config.allow_emergency_alerts then
+        return false, "Emergency alerts disabled"
+    end
+    
+    local message = {
+        type = "security_alert",
+        action = "start",
+        alarm_type = alarm_type,
+        source_id = computer_id,
+        source_name = getUsername(),
+        origin_id = computer_id,
+        timestamp = os.time(),
+        message_id = computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999),
+        hops = 0,
+        device_type = is_terminal and "terminal" or "computer",
+        password_hash = hashPassword(config.security_password)
+    }
+    
+    rednet.broadcast(message, SECURITY_PROTOCOL)
+    return true, "Alert sent"
+end
+
+local function sendSecurityCancel()
+    if not config.allow_emergency_alerts then
+        return false, "Emergency alerts disabled"
+    end
+    
+    local message = {
+        type = "security_alert",
+        action = "stop",
+        source_id = computer_id,
+        source_name = getUsername(),
+        origin_id = computer_id,
+        timestamp = os.time(),
+        message_id = computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999),
+        hops = 0,
+        device_type = is_terminal and "terminal" or "computer",
+        password_hash = hashPassword(config.security_password)
+    }
+    
+    rednet.broadcast(message, SECURITY_PROTOCOL)
+    return true, "Cancel sent"
 end
 
 -- Username management
@@ -285,37 +395,95 @@ local function requestUserList()
 end
 
 -- Message processing
-local function handleMessage(sender_id, message)
-    if message.type == "user_presence" then
-        online_users[message.user_id] = {
-            username = message.username,
-            device_type = message.device_type,
-            last_seen = os.time()
-        }
-        
-    elseif message.type == "direct_message" then
-        if message.to_id == computer_id and message.from_id ~= computer_id then
-            addMessage(message.from_id, message.to_id, message.content, "direct")
-        end
-        
-    elseif message.type == "server_announcement" then
-        connected_servers[sender_id] = {
-            name = message.server_name or "Server-" .. sender_id,
-            last_seen = os.time(),
-            capabilities = message.capabilities or {}
-        }
-        
-    elseif message.type == "user_list_response" then
-        if message.users then
-            for user_id, user_data in pairs(message.users) do
-                online_users[user_id] = user_data
+local function handleMessage(sender_id, message, protocol)
+    if protocol == PHONE_PROTOCOL then
+        if message.type == "user_presence" then
+            online_users[message.user_id] = {
+                username = message.username,
+                device_type = message.device_type,
+                last_seen = os.time()
+            }
+            
+        elseif message.type == "direct_message" then
+            if message.to_id == computer_id and message.from_id ~= computer_id then
+                addMessage(message.from_id, message.to_id, message.content, "direct")
+            end
+            
+        elseif message.type == "server_announcement" then
+            connected_servers[sender_id] = {
+                name = message.server_name or "Server-" .. sender_id,
+                last_seen = os.time(),
+                capabilities = message.capabilities or {}
+            }
+            
+        elseif message.type == "user_list_response" then
+            if message.users then
+                for user_id, user_data in pairs(message.users) do
+                    online_users[user_id] = user_data
+                end
+            end
+            
+        elseif message.type == "app_update_notification" then
+            if message.app_name and message.download_url then
+                print("UPDATE AVAILABLE: " .. message.app_name)
+                print("URL: " .. message.download_url)
             end
         end
         
-    elseif message.type == "app_update_notification" then
-        if message.app_name and message.download_url then
-            print("UPDATE AVAILABLE: " .. message.app_name)
-            print("URL: " .. message.download_url)
+    elseif protocol == SECURITY_PROTOCOL then
+        -- Handle security system messages
+        if message.type == "security_alert" then
+            if message.password_hash == hashPassword(config.security_password) then
+                if message.action == "start" then
+                    active_alarms[message.source_id] = {
+                        type = message.alarm_type or "general",
+                        source_name = message.source_name or ("Node-" .. message.source_id),
+                        start_time = message.timestamp or os.time()
+                    }
+                    
+                    -- Notification for security alerts
+                    if config.notification_sound and speaker then
+                        speaker.playNote("pling", 3.0, 12)  -- High pitched alert
+                    end
+                    if config.vibrate_on_message and is_terminal then
+                        -- More intense vibration for security alerts
+                        local original_bg = term.getBackgroundColor()
+                        for i = 1, 4 do
+                            term.setBackgroundColor(colors.red)
+                            term.clear()
+                            sleep(0.05)
+                            term.setBackgroundColor(original_bg)
+                            term.clear()
+                            sleep(0.05)
+                        end
+                    end
+                    
+                elseif message.action == "stop" then
+                    active_alarms[message.source_id] = nil
+                end
+            end
+            
+        elseif message.type == "security_heartbeat" then
+            if message.password_hash == hashPassword(config.security_password) then
+                security_nodes[message.computer_id] = {
+                    device_name = message.device_name or ("Node-" .. message.computer_id),
+                    device_type = message.device_type or "computer",
+                    last_seen = os.time(),
+                    alarm_active = message.alarm_active,
+                    alarm_type = message.alarm_type
+                }
+                
+                -- Update active alarms from heartbeat
+                if message.alarm_active then
+                    active_alarms[message.computer_id] = {
+                        type = message.alarm_type or "general",
+                        source_name = message.device_name or ("Node-" .. message.computer_id),
+                        start_time = message.alarm_start_time or os.time()
+                    }
+                else
+                    active_alarms[message.computer_id] = nil
+                end
+            end
         end
     end
 end
@@ -337,12 +505,24 @@ local function drawMainScreen()
     term.setCursorPos(1, 1)
     drawHeader()
     
+    -- Show active alarms prominently
+    local alarm_count = 0
+    for _ in pairs(active_alarms) do alarm_count = alarm_count + 1 end
+    
+    if alarm_count > 0 then
+        term.setTextColor(colors.red)
+        print("!!! " .. alarm_count .. " ACTIVE ALARMS !!!")
+        term.setTextColor(colors.white)
+        print("")
+    end
+    
     print("Main Menu:")
     print("1. Messages (" .. unread_count .. " unread)")
     print("2. Contacts (" .. #contacts .. " saved)")
-    print("3. Online Users (" .. #online_users .. " online)")
-    print("4. Settings")
-    print("5. About")
+    print("3. Online Users")
+    print("4. Emergency Alerts")  -- New option
+    print("5. Settings")
+    print("6. About")
     if is_terminal then
         print("Q. Quit")
     end
@@ -503,21 +683,71 @@ local function drawOnlineUsersScreen()
     print("Enter number to message, R to refresh, B to go back:")
 end
 
-local function drawSettingsScreen()
+local function drawEmergencyScreen()
     term.clear()
     term.setCursorPos(1, 1)
-    drawHeader()
-    
-    print("Settings:")
-    print("1. Change Username (Current: " .. getUsername() .. ")")
-    print("2. Notification Sound: " .. (config.notification_sound and "ON" or "OFF"))
-    print("3. Vibrate on Message: " .. (config.vibrate_on_message and "ON" or "OFF"))
-    print("4. Compact Mode: " .. (config.compact_mode and "ON" or "OFF"))
-    print("5. Clear All Messages")
-    print("6. Export Contacts")
-    print("B. Back")
+    print("=== EMERGENCY ALERTS ===")
+    print("User: " .. getUsername())
     print("")
-    print("Enter choice:")
+    
+    -- Show active alarms
+    local alarm_count = 0
+    for source_id, alarm_data in pairs(active_alarms) do
+        alarm_count = alarm_count + 1
+        term.setTextColor(colors.red)
+        print("ACTIVE: " .. string.upper(alarm_data.type))
+        term.setTextColor(colors.white)
+        print("  From: " .. alarm_data.source_name)
+        print("  Time: " .. textutils.formatTime(alarm_data.start_time, true))
+        print("")
+    end
+    
+    if alarm_count == 0 then
+        term.setTextColor(colors.green)
+        print("All Clear - No Active Alarms")
+        term.setTextColor(colors.white)
+        print("")
+    end
+    
+    -- Show security nodes
+    local node_count = 0
+    for _ in pairs(security_nodes) do node_count = node_count + 1 end
+    
+    if node_count > 0 then
+        print("Security Nodes (" .. node_count .. "):")
+        for node_id, node_data in pairs(security_nodes) do
+            local status = node_data.alarm_active and "[ALARM]" or "[OK]"
+            local time_ago = os.time() - node_data.last_seen
+            if time_ago < 60 then
+                if node_data.alarm_active then
+                    term.setTextColor(colors.red)
+                else
+                    term.setTextColor(colors.green)
+                end
+                print("  " .. node_data.device_name .. " " .. status)
+                term.setTextColor(colors.white)
+            end
+        end
+        print("")
+    end
+    
+    if config.allow_emergency_alerts then
+        print("Send Alert:")
+        print("G - General Alert")
+        print("E - Evacuation Alert")
+        print("L - Lockdown Alert")
+        if alarm_count > 0 then
+            print("C - Cancel All Alarms")
+        end
+        print("")
+    else
+        term.setTextColor(colors.yellow)
+        print("Emergency alerts disabled")
+        term.setTextColor(colors.white)
+        print("")
+    end
+    
+    print("R - Refresh | B - Back")
 end
 
 -- Input handling functions
@@ -532,8 +762,10 @@ local function handleMainScreenInput()
         current_screen = "online_users"
         requestUserList()
     elseif input == "4" then
-        current_screen = "settings"
+        current_screen = "emergency"
     elseif input == "5" then
+        current_screen = "settings"
+    elseif input == "6" then
         current_screen = "about"
     elseif input:lower() == "q" and is_terminal then
         return false  -- Quit
@@ -686,6 +918,9 @@ local function main()
         elseif current_screen == "new_message" then
             sendNewMessage()
             current_screen = "messages"
+        elseif current_screen == "emergency" then
+            drawEmergencyScreen()
+            handleEmergencyScreenInput()
         elseif current_screen == "settings" then
             drawSettingsScreen()
             local input = read()
@@ -703,6 +938,22 @@ local function main()
                 config.compact_mode = not config.compact_mode
                 saveData()
             elseif input == "5" then
+                config.allow_emergency_alerts = not config.allow_emergency_alerts
+                saveData()
+                print("")
+                print("Emergency alerts " .. (config.allow_emergency_alerts and "enabled" or "disabled"))
+                sleep(1)
+            elseif input == "6" then
+                print("")
+                print("Enter new security password:")
+                local new_pass = read("*")
+                if new_pass and new_pass ~= "" then
+                    config.security_password = new_pass
+                    saveData()
+                    print("Security password updated!")
+                    sleep(1)
+                end
+            elseif input == "7" then
                 messages = {}
                 unread_count = 0
                 saveData()
