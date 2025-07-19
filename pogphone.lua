@@ -488,25 +488,31 @@ local function handleMessage(sender_id, message, protocol)
             end
             
         elseif message.type == "security_auth_response" then
-            -- Add debug logging for auth responses
-            addDebugLog("AUTH: Received response, authenticated=" .. tostring(message.authenticated))
-            
-            -- Clear pending auth request
-            auth_request_pending = false
-            
-            if message.authenticated then
-                config.security_authenticated = true
-                config.security_auth_expires = message.expires or (os.time() + 3600)
-                config.allow_emergency_alerts = true
-                auth_last_result = "success"
-                addDebugLog("AUTH: Success - authenticated until " .. config.security_auth_expires)
-                saveData()
+            -- Only process if this response is for us
+            if message.target_user_id == computer_id then
+                -- Add debug logging for auth responses
+                addDebugLog("AUTH: Received response, authenticated=" .. tostring(message.authenticated))
+                
+                -- Clear pending auth request
+                auth_request_pending = false
+                
+                if message.authenticated then
+                    config.security_authenticated = true
+                    config.security_auth_expires = message.expires or (os.time() + 3600)
+                    config.allow_emergency_alerts = true
+                    auth_last_result = "success"
+                    addDebugLog("AUTH: Success - authenticated until " .. config.security_auth_expires)
+                    saveData()
+                else
+                    config.security_authenticated = false
+                    config.allow_emergency_alerts = false
+                    auth_last_result = "failed"
+                    addDebugLog("AUTH: Failed - incorrect password")
+                    saveData()
+                end
             else
-                config.security_authenticated = false
-                config.allow_emergency_alerts = false
-                auth_last_result = "failed"
-                addDebugLog("AUTH: Failed - incorrect password")
-                saveData()
+                -- This response is for another computer, ignore it
+                addDebugLog("AUTH: Ignoring response for user " .. (message.target_user_id or "unknown"))
             end
             
         elseif message.type == "modem_detection_response" then
