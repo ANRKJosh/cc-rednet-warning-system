@@ -321,18 +321,41 @@ local function sendPasswordResponse(user_id, password_attempt)
     
     local is_correct = authenticateUser(user_id, password_attempt)
     
+    -- Try a simpler response structure first
     local response = {
         type = "security_auth_response",
         authenticated = is_correct,
-        expires = is_correct and (os.time() + 3600) or nil,
-        server_name = config.server_name,
-        target_user_id = user_id  -- Add this so only the right client processes it
+        target_user_id = user_id,
+        server_name = config.server_name
     }
+    
+    -- Only add expires if authenticated to avoid potential serialization issues
+    if is_correct then
+        response.expires = os.time() + 3600
+    end
     
     log("Preparing auth response: authenticated=" .. tostring(is_correct) .. " target=" .. user_id, "DEBUG")
     
+    -- First, try sending a test message with the same structure as server announcements
+    local test_response = {
+        type = "auth_test",
+        target_user_id = user_id,
+        authenticated = is_correct,
+        server_name = config.server_name
+    }
+    
+    local test_success, test_error = pcall(function()
+        rednet.broadcast(test_response, PHONE_PROTOCOL)
+    end)
+    
+    if test_success then
+        log("Test auth message broadcast successful", "DEBUG")
+    else
+        log("Test auth message broadcast failed: " .. tostring(test_error), "ERROR")
+    end
+    
+    -- Now try the real response
     local success, error_msg = pcall(function()
-        -- FIXED: Change from rednet.send to rednet.broadcast for better reliability
         rednet.broadcast(response, PHONE_PROTOCOL)
     end)
     
