@@ -492,6 +492,12 @@ local function handleMessage(sender_id, message, protocol)
                 end
             end
             
+        elseif message.type == "auth_test" then
+            addDebugLog("TEST: Received auth_test - target=" .. tostring(message.target_user_id) .. " my_id=" .. computer_id)
+            if message.target_user_id == computer_id then
+                addDebugLog("TEST: Auth test message received successfully! authenticated=" .. tostring(message.authenticated))
+            end
+            
         elseif message.type == "security_auth_response" then
             addDebugLog("AUTH: Got response - target=" .. tostring(message.target_user_id) .. " my_id=" .. computer_id)
             
