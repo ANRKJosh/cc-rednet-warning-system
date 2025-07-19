@@ -1299,17 +1299,11 @@ local function main()
                 end
             end
         elseif current_screen == "emergency" then
-            if auth_request_pending then
-                addDebugLog("LOOP: Drawing emergency screen with auth pending")
-            end
             drawEmergencyScreen()
             
             -- Don't block if auth is pending - let background processing continue
             if not auth_request_pending then
-                addDebugLog("LOOP: Handling emergency input")
                 handleEmergencyScreenInput()
-            else
-                addDebugLog("LOOP: Skipping input, auth pending")
             end
         elseif current_screen == "settings" then
             drawSettingsScreen()
@@ -1422,22 +1416,10 @@ local function main()
         end
         
         -- Handle background events
-        if auth_request_pending then
-            addDebugLog("LOOP: Entering parallel.waitForAny with auth pending")
-        end
-        
         parallel.waitForAny(
             function()
                 while true do
-                    if auth_request_pending then
-                        addDebugLog("LOOP: Waiting for event in background handler")
-                    end
-                    
                     local event, param1, param2, param3 = os.pullEvent()
-                    
-                    if auth_request_pending then
-                        addDebugLog("LOOP: Got event: " .. event)
-                    end
                     
                     if event == "rednet_message" then
                         local sender_id, message, protocol = param1, param2, param3
