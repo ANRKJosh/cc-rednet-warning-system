@@ -412,13 +412,24 @@ local function handleSecurityMessage(sender_id, message)
             }
             log("Active alarm added: " .. sender_id .. " (" .. (message.alarm_type or "general") .. ")")
         elseif message.action == "stop" then
-            if active_security_alarms[sender_id] then
-                active_security_alarms[sender_id] = nil
-                log("Active alarm cleared: " .. sender_id)
-            end
+            log("Processing stop message from " .. sender_id .. ", global_cancel: " .. tostring(message.global_cancel))
+            
             if message.global_cancel then
+                -- Global cancel - clear all alarms
+                local cleared_count = 0
+                for alarm_id, _ in pairs(active_security_alarms) do
+                    cleared_count = cleared_count + 1
+                end
                 active_security_alarms = {}
-                log("All active alarms cleared by " .. sender_id)
+                log("Global cancel: cleared " .. cleared_count .. " active alarms")
+            else
+                -- Specific device cancel - clear just that alarm  
+                if active_security_alarms[sender_id] then
+                    active_security_alarms[sender_id] = nil
+                    log("Cleared specific alarm from " .. sender_id)
+                else
+                    log("No active alarm found for " .. sender_id .. " to clear")
+                end
             end
         end
         
