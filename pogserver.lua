@@ -31,14 +31,14 @@ local config = {
         ["poggishtown-security"] = {
             name = "PoggishTown Security",
             version = "2.0",
-            url = "https://raw.githubusercontent.com/ANRKJosh/cc-rednet-warning-system/refs/heads/main/pogalert",
+            url = "https://raw.githubusercontent.com/your-repo/poggishtown-security.lua",
             description = "Password-protected alarm system",
             compatible_devices = {"computer", "terminal"}
         },
         ["poggishtown-phone"] = {
             name = "PoggishTown Phone", 
             version = "2.0",
-            url = "https://raw.githubusercontent.com/ANRKJosh/cc-rednet-warning-system/refs/heads/main/pogphone.lua",
+            url = "https://raw.githubusercontent.com/your-repo/poggishtown-phone.lua",
             description = "Modern messaging and communication",
             compatible_devices = {"terminal", "computer"}
         }
@@ -409,6 +409,13 @@ local function handleSecurityMessage(sender_id, message)
             last_action = message.action,
             alarm_type = message.alarm_type
         }
+        
+        -- IMPORTANT: Relay security messages to other devices
+        if config.auto_relay_messages then
+            log("Relaying security alert to network")
+            rednet.broadcast(message, SECURITY_PROTOCOL)
+        end
+        
     elseif message.type == "security_heartbeat" then
         security_nodes[sender_id] = {
             last_seen = os.time(),
