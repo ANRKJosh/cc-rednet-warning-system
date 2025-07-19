@@ -725,7 +725,7 @@ local function drawEmergencyScreen()
     print("R - Refresh | B - Back")
     
     -- Show debug log
-    if #debug_log > 0 then
+    if debug_log and #debug_log > 0 then
         print("")
         print("Debug Log:")
         for _, entry in ipairs(debug_log) do
@@ -925,6 +925,11 @@ end
 
 -- Main application loop
 local function main()
+    -- Initialize debug log if not already initialized
+    if not debug_log then
+        debug_log = {}
+    end
+    
     if not initializeModem() then
         print("ERROR: No modem found!")
         print("Please attach a wireless modem.")
