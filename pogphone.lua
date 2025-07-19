@@ -267,7 +267,17 @@ local function requestServerAuthentication(password)
     }
     
     addDebugLog("AUTH: Sending request for user " .. computer_id .. " with hash " .. hashPassword(password))
-    rednet.broadcast(message, PHONE_PROTOCOL)
+    
+    -- Test the broadcast with error handling
+    local success, error_msg = pcall(function()
+        rednet.broadcast(message, PHONE_PROTOCOL)
+    end)
+    
+    if success then
+        addDebugLog("AUTH: Broadcast call succeeded")
+    else
+        addDebugLog("AUTH: Broadcast failed - " .. tostring(error_msg))
+    end
     
     -- Set pending state
     auth_request_pending = true
@@ -467,13 +477,40 @@ local function performNetworkTest()
     }
     
     addDebugLog("NET_TEST: Sending network test on " .. PHONE_PROTOCOL)
-    rednet.broadcast(test_message, PHONE_PROTOCOL)
     
-    print("Test message sent. Checking protocols:")
+    -- Test rednet.broadcast with error handling
+    local success, error_msg = pcall(function()
+        rednet.broadcast(test_message, PHONE_PROTOCOL)
+    end)
+    
+    if success then
+        addDebugLog("NET_TEST: Broadcast call succeeded")
+        print("✓ Broadcast call succeeded")
+    else
+        addDebugLog("NET_TEST: Broadcast failed - " .. tostring(error_msg))
+        print("✗ Broadcast failed: " .. tostring(error_msg))
+    end
+    
+    print("")
+    print("Network Information:")
     print("PHONE_PROTOCOL = '" .. PHONE_PROTOCOL .. "'")
     print("SECURITY_PROTOCOL = '" .. SECURITY_PROTOCOL .. "'")
     print("Computer ID = " .. computer_id)
     print("Modem side = " .. (modem_side or "none"))
+    
+    -- Test if rednet is open
+    if modem_side then
+        local modem = peripheral.wrap(modem_side)
+        if modem then
+            print("Modem type = " .. (modem.isWireless and (modem.isWireless() and "wireless" or "ender") or "unknown"))
+            print("Rednet open = " .. (rednet.isOpen(modem_side) and "YES" or "NO"))
+        else
+            print("Modem = NOT FOUND")
+        end
+    else
+        print("Modem = NO SIDE SET")
+    end
+    
     print("")
     print("Check server logs for received test message.")
     print("Press any key to continue...")
