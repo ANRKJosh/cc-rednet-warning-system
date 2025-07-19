@@ -963,6 +963,7 @@ local function handleMessage(sender_id, message, protocol)
                 end
                 
             elseif message.type == "modem_detection_request" then
+                log("Received modem detection request from user " .. (message.user_id or sender_id), "DEBUG")
                 local override = config.modem_detection_override[sender_id]
                 local response = {
                     type = "modem_detection_response",
@@ -972,10 +973,12 @@ local function handleMessage(sender_id, message, protocol)
                 }
                 
                 local success, error_msg = pcall(function()
-                    rednet.send(sender_id, response, PHONE_PROTOCOL)
+                    rednet.broadcast(response, PHONE_PROTOCOL)  -- Changed to broadcast for consistency
                 end)
                 
-                if not success then
+                if success then
+                    log("Sent modem detection response to user " .. (message.user_id or sender_id), "DEBUG")
+                else
                     log("Failed to send modem detection response to " .. sender_id .. ": " .. tostring(error_msg), "ERROR")
                     server_stats.network_errors = server_stats.network_errors + 1
                 end
