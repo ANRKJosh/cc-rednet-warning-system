@@ -467,16 +467,21 @@ local function handleMessage(sender_id, message, protocol)
         end
         
     elseif protocol == SECURITY_PROTOCOL then
+        -- Skip messages from ourselves (original sender) or if we already relayed it
+        if sender_id == computer_id or (message.original_sender and message.original_sender == computer_id) then
+            return
+        end
+        
         -- Debug: Log all security messages received
-        print("DEBUG: Received security message from " .. sender_id .. ", type: " .. (message.type or "unknown") .. ", action: " .. (message.action or "none"))
+        addDebugLog("Received from " .. sender_id .. ": " .. (message.type or "unknown") .. "/" .. (message.action or "none"))
         
         -- Always process security messages regardless of authentication for cancel messages
         if message.type == "security_alert" then
             if message.action == "start" and isSecurityAuthenticated() then
-                print("DEBUG: Processing START alarm from " .. sender_id)
-                active_alarms[message.source_id] = {
+                addDebugLog("Processing START alarm from " .. (message.original_sender or sender_id))
+                active_alarms[message.source_id or message.original_sender or sender_id] = {
                     type = message.alarm_type or "general",
-                    source_name = message.source_name or ("Node-" .. message.source_id),
+                    source_name = message.source_name or ("Node-" .. (message.source_id or message.original_sender or sender_id)),
                     start_time = message.timestamp or os.time()
                 }
                 
@@ -496,21 +501,21 @@ local function handleMessage(sender_id, message, protocol)
                 end
                 
             elseif message.action == "stop" then
-                print("DEBUG: Processing STOP/CANCEL from " .. sender_id)
+                addDebugLog("Processing STOP/CANCEL from " .. (message.original_sender or sender_id))
                 -- Process cancel messages regardless of authentication
                 if message.global_cancel then
                     -- Global cancel - clear all alarms
                     active_alarms = {}
-                    print("DEBUG: Cleared all alarms (global cancel)")
+                    addDebugLog("Cleared all alarms (global cancel)")
                 else
                     -- Specific device cancel - clear just that alarm
-                    active_alarms[message.source_id] = nil
-                    print("DEBUG: Cleared alarm from " .. message.source_id)
+                    active_alarms[message.source_id or message.original_sender or sender_id] = nil
+                    addDebugLog("Cleared alarm from " .. (message.source_id or message.original_sender or sender_id))
                 end
             end
             
         elseif message.type == "security_heartbeat" and isSecurityAuthenticated() then
-            print("DEBUG: Processing heartbeat from " .. message.computer_id)
+            addDebugLog("Processing heartbeat from " .. message.computer_id)
             security_nodes[message.computer_id] = {
                 device_name = message.device_name or ("Node-" .. message.computer_id),
                 device_type = message.device_type or "computer",
@@ -525,7 +530,7 @@ local function handleMessage(sender_id, message, protocol)
                     source_name = message.device_name or ("Node-" .. message.computer_id),
                     start_time = message.alarm_start_time or os.time()
                 }
-                print("DEBUG: Added alarm from heartbeat for " .. message.computer_id)
+                addDebugLog("Added alarm from heartbeat for " .. message.computer_id)
             else
                 active_alarms[message.computer_id] = nil
             end
@@ -718,6 +723,15 @@ local function drawEmergencyScreen()
     
     print("")
     print("R - Refresh | B - Back")
+    
+    -- Show debug log
+    if #debug_log > 0 then
+        print("")
+        print("Debug Log:")
+        for _, entry in ipairs(debug_log) do
+            print("  " .. entry)
+        end
+    end
 end
 
 local function handleEmergencyScreenInput()
@@ -808,6 +822,8 @@ local function handleEmergencyScreenInput()
             print("")
             if success then
                 print("CANCEL SIGNAL SENT!")
+                -- Force clear our own alarm immediately
+                active_alarms = {}
             else
                 print("Failed: " .. message)
             end
@@ -917,9 +933,8 @@ local function main()
     
     loadData()
     
-    -- Only prompt for username if we genuinely don't have one set
-    if not config.username or config.username == "" then
-        print("First time setup - no username configured.")
+    -- Simple check - only prompt if config.username is nil or empty
+    if config.username == nil or config.username == "" then
         setUsername()
     end
     
