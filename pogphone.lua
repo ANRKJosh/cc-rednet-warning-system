@@ -467,58 +467,67 @@ local function handleMessage(sender_id, message, protocol)
         end
         
     elseif protocol == SECURITY_PROTOCOL then
-        if isSecurityAuthenticated() then
-            if message.type == "security_alert" then
-                if message.action == "start" then
-                    active_alarms[message.source_id] = {
-                        type = message.alarm_type or "general",
-                        source_name = message.source_name or ("Node-" .. message.source_id),
-                        start_time = message.timestamp or os.time()
-                    }
-                    
-                    if config.notification_sound and speaker then
-                        speaker.playNote("pling", 3.0, 12)
-                    end
-                    if config.vibrate_on_message and is_terminal then
-                        local original_bg = term.getBackgroundColor()
-                        for i = 1, 4 do
-                            term.setBackgroundColor(colors.red)
-                            term.clear()
-                            sleep(0.05)
-                            term.setBackgroundColor(original_bg)
-                            term.clear()
-                            sleep(0.05)
-                        end
-                    end
-                    
-                elseif message.action == "stop" then
-                    if message.global_cancel then
-                        -- Global cancel - clear all alarms
-                        active_alarms = {}
-                    else
-                        -- Specific device cancel - clear just that alarm
-                        active_alarms[message.source_id] = nil
-                    end
-                end
-                
-            elseif message.type == "security_heartbeat" then
-                security_nodes[message.computer_id] = {
-                    device_name = message.device_name or ("Node-" .. message.computer_id),
-                    device_type = message.device_type or "computer",
-                    last_seen = os.time(),
-                    alarm_active = message.alarm_active,
-                    alarm_type = message.alarm_type
+        -- Debug: Log all security messages received
+        print("DEBUG: Received security message from " .. sender_id .. ", type: " .. (message.type or "unknown") .. ", action: " .. (message.action or "none"))
+        
+        -- Always process security messages regardless of authentication for cancel messages
+        if message.type == "security_alert" then
+            if message.action == "start" and isSecurityAuthenticated() then
+                print("DEBUG: Processing START alarm from " .. sender_id)
+                active_alarms[message.source_id] = {
+                    type = message.alarm_type or "general",
+                    source_name = message.source_name or ("Node-" .. message.source_id),
+                    start_time = message.timestamp or os.time()
                 }
                 
-                if message.alarm_active then
-                    active_alarms[message.computer_id] = {
-                        type = message.alarm_type or "general",
-                        source_name = message.device_name or ("Node-" .. message.computer_id),
-                        start_time = message.alarm_start_time or os.time()
-                    }
-                else
-                    active_alarms[message.computer_id] = nil
+                if config.notification_sound and speaker then
+                    speaker.playNote("pling", 3.0, 12)
                 end
+                if config.vibrate_on_message and is_terminal then
+                    local original_bg = term.getBackgroundColor()
+                    for i = 1, 4 do
+                        term.setBackgroundColor(colors.red)
+                        term.clear()
+                        sleep(0.05)
+                        term.setBackgroundColor(original_bg)
+                        term.clear()
+                        sleep(0.05)
+                    end
+                end
+                
+            elseif message.action == "stop" then
+                print("DEBUG: Processing STOP/CANCEL from " .. sender_id)
+                -- Process cancel messages regardless of authentication
+                if message.global_cancel then
+                    -- Global cancel - clear all alarms
+                    active_alarms = {}
+                    print("DEBUG: Cleared all alarms (global cancel)")
+                else
+                    -- Specific device cancel - clear just that alarm
+                    active_alarms[message.source_id] = nil
+                    print("DEBUG: Cleared alarm from " .. message.source_id)
+                end
+            end
+            
+        elseif message.type == "security_heartbeat" and isSecurityAuthenticated() then
+            print("DEBUG: Processing heartbeat from " .. message.computer_id)
+            security_nodes[message.computer_id] = {
+                device_name = message.device_name or ("Node-" .. message.computer_id),
+                device_type = message.device_type or "computer",
+                last_seen = os.time(),
+                alarm_active = message.alarm_active,
+                alarm_type = message.alarm_type
+            }
+            
+            if message.alarm_active then
+                active_alarms[message.computer_id] = {
+                    type = message.alarm_type or "general",
+                    source_name = message.device_name or ("Node-" .. message.computer_id),
+                    start_time = message.alarm_start_time or os.time()
+                }
+                print("DEBUG: Added alarm from heartbeat for " .. message.computer_id)
+            else
+                active_alarms[message.computer_id] = nil
             end
         end
     end
@@ -908,13 +917,9 @@ local function main()
     
     loadData()
     
-    -- Check if we have a proper username (not just the default)
-    local current_username = getUsername()
-    local is_default_name = string.find(current_username, "Terminal%-") or string.find(current_username, "Computer%-")
-    
-    -- Only prompt for username if we don't have a custom one set
-    if not config.username or config.username == "" or (is_default_name and not config.username) then
-        print("First time setup or no custom username detected.")
+    -- Only prompt for username if we genuinely don't have one set
+    if not config.username or config.username == "" then
+        print("First time setup - no username configured.")
         setUsername()
     end
     
