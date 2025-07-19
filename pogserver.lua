@@ -54,6 +54,7 @@ local connected_users = {}  -- Currently online users
 local stored_messages = {}  -- Messages for offline users
 local security_nodes = {}   -- Security system nodes
 local authenticated_users = {}  -- Users authenticated for security features
+local active_security_alarms = {}  -- Track active alarms globally
 local server_stats = {
     messages_relayed = 0,
     users_served = 0,
@@ -401,19 +402,59 @@ local function handleSecurityMessage(sender_id, message)
             (message.alarm_type or "") .. " from " .. 
             (message.source_name or sender_id), "ALERT")
         
+        -- Track active alarms globally
+        if message.action == "start" then
+            active_security_alarms[sender_id] = {
+                type = message.alarm_type or "general",
+                source_name = message.source_name or ("Node-" .. sender_id),
+                start_time = message.timestamp or os.time(),
+                device_type = message.device_type or "unknown"
+            }
+            log("Active alarm added: " .. sender_id .. " (" .. (message.alarm_type or "general") .. ")")
+        elseif message.action == "stop" then
+            -- If it's a cancel from this specific device, clear just their alarm
+            if active_security_alarms[sender_id] then
+                active_security_alarms[sender_id] = nil
+                log("Active alarm cleared: " .. sender_id)
+            end
+            -- If it's a global cancel, clear all alarms
+            if message.alarm_type == nil or message.global_cancel then
+                active_security_alarms = {}
+                log("All active alarms cleared by " .. sender_id)
+            end
+        end
+        
         -- Store security node info
         security_nodes[sender_id] = {
             last_seen = os.time(),
             device_name = message.source_name or ("Node-" .. sender_id),
             device_type = message.device_type or "unknown",
             last_action = message.action,
-            alarm_type = message.alarm_type
+            alarm_type = message.alarm_type,
+            alarm_active = (message.action == "start")
         }
         
-        -- IMPORTANT: Relay security messages to other devices
+        -- IMPORTANT: Relay security messages to other devices (except back to sender)
         if config.auto_relay_messages then
             log("Relaying security alert to network")
-            rednet.broadcast(message, SECURITY_PROTOCOL)
+            
+            -- Add relay information to prevent loops
+            local relay_message = {}
+            for key, value in pairs(message) do
+                relay_message[key] = value
+            end
+            relay_message.relayed_by_server = computer_id
+            relay_message.original_sender = sender_id
+            
+            -- Broadcast to everyone except the original sender
+            for user_id, user_data in pairs(connected_users) do
+                if user_id ~= sender_id then
+                    rednet.send(user_id, relay_message, SECURITY_PROTOCOL)
+                end
+            end
+            
+            -- Also broadcast generally for any devices not in connected_users list
+            rednet.broadcast(relay_message, SECURITY_PROTOCOL)
         end
         
     elseif message.type == "security_heartbeat" then
@@ -424,6 +465,27 @@ local function handleSecurityMessage(sender_id, message)
             alarm_active = message.alarm_active,
             alarm_type = message.alarm_type
         }
+        
+        -- Send active alarms to newly connected devices
+        if message.alarm_active == false and next(active_security_alarms) then
+            -- Device is online but not alarming - send them current active alarms
+            for alarm_source, alarm_data in pairs(active_security_alarms) do
+                if alarm_source ~= sender_id then
+                    local sync_message = {
+                        type = "security_alert",
+                        action = "start",
+                        alarm_type = alarm_data.type,
+                        source_id = alarm_source,
+                        source_name = alarm_data.source_name,
+                        timestamp = alarm_data.start_time,
+                        device_type = alarm_data.device_type,
+                        sync_message = true  -- Mark as sync to avoid loops
+                    }
+                    rednet.send(sender_id, sync_message, SECURITY_PROTOCOL)
+                    log("Sent alarm sync to " .. sender_id .. " for alarm from " .. alarm_source)
+                end
+            end
+        end
     end
 end
 
@@ -586,6 +648,18 @@ local function drawServerStatus()
     print("ID: " .. computer_id .. " | Up: " .. math.floor((os.time() - server_stats.uptime_start) / 60) .. "m")
     print("")
     
+    -- Show active security alarms prominently
+    local active_alarm_count = tableCount(active_security_alarms)
+    if active_alarm_count > 0 then
+        term.setTextColor(colors.red)
+        print("! ACTIVE ALARMS: " .. active_alarm_count .. " !")
+        term.setTextColor(colors.white)
+        for source_id, alarm_data in pairs(active_security_alarms) do
+            print("  " .. alarm_data.source_name .. " (" .. alarm_data.type .. ")")
+        end
+        print("")
+    end
+    
     -- Network info (compact)
     print("Network: " .. (modem_side or "None") .. (hasEnderModem() and " (Ender)" or " (WiFi)"))
     print("")
@@ -610,20 +684,6 @@ local function drawServerStatus()
     print("  Security:" .. sec_status)
     term.setTextColor(colors.white)
     print("")
-    
-    -- Active security alerts
-    local active_alarms = 0
-    for node_id, node_data in pairs(security_nodes) do
-        if node_data.alarm_active then
-            active_alarms = active_alarms + 1
-        end
-    end
-    
-    if active_alarms > 0 then
-        term.setTextColor(colors.red)
-        print("! ACTIVE ALARMS: " .. active_alarms .. " !")
-        term.setTextColor(colors.white)
-    end
     
     -- Connected users (compact)
     local user_count = tableCount(connected_users)
