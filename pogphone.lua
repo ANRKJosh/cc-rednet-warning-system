@@ -62,15 +62,13 @@ local selected_contact = nil
 local security_nodes = {}
 local active_alarms = {}
 
--- Debug logging function (must be first!)
-local debug_log = {}
+-- Debug logging
+debug_log = debug_log or {}
+
 local function addDebugLog(message)
-    if not debug_log then
-        debug_log = {}
-    end
-    table.insert(debug_log, os.time() .. ": " .. message)
-    -- Keep only last 5 entries
-    while #debug_log > 5 do
+    if not debug_log then debug_log = {} end
+    table.insert(debug_log, textutils.formatTime(os.time(), true) .. " " .. message)
+    if #debug_log > 10 then
         table.remove(debug_log, 1)
     end
 end
@@ -333,7 +331,7 @@ local function addMessage(from_id, to_id, content, msg_type)
     return message
 end
 
--- Security alert functions (FIXED WITH PASSWORD HASH)
+-- Security alert functions
 local function sendSecurityAlert(alarm_type)
     if not config.allow_emergency_alerts or not isSecurityAuthenticated() then
         return false, "Not authenticated for emergency alerts"
@@ -350,8 +348,7 @@ local function sendSecurityAlert(alarm_type)
         message_id = computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999),
         hops = 0,
         device_type = is_terminal and "terminal" or "computer",
-        authenticated_user = true,
-        password_hash = hashPassword("poggishtown2025")  -- FIXED: Added password hash
+        authenticated_user = true
     }
     
     rednet.broadcast(message, SECURITY_PROTOCOL)
@@ -381,9 +378,7 @@ local function sendSecurityCancel()
         message_id = computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999),
         hops = 0,
         device_type = is_terminal and "terminal" or "computer",
-        authenticated_user = true,
-        password_hash = hashPassword("poggishtown2025"),  -- FIXED: Added password hash
-        global_cancel = true  -- FIXED: Added global cancel flag
+        authenticated_user = true
     }
     
     rednet.broadcast(message, SECURITY_PROTOCOL)
@@ -398,12 +393,10 @@ local function requestAlarmSync()
         device_name = getUsername(),
         timestamp = os.time(),
         alarm_active = false,  -- We're not alarming, trigger sync
-        device_type = is_terminal and "terminal" or "computer",
-        password_hash = hashPassword("poggishtown2025")  -- FIXED: Added password hash
+        device_type = is_terminal and "terminal" or "computer"
     }
     rednet.broadcast(message, SECURITY_PROTOCOL)
 end
-
 -- Network communication
 local function broadcastPresence()
     local message = {
@@ -438,61 +431,6 @@ local function requestUserList()
         timestamp = os.time()
     }
     rednet.broadcast(message, PHONE_PROTOCOL)
-end
-
--- Network testing function (FIXED: Added missing function)
-local function testNetwork()
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("=== NETWORK TEST ===")
-    print("Testing communication with other devices...")
-    print("")
-    
-    -- Test phone protocol
-    local test_message = {
-        type = "network_test",
-        from_id = computer_id,
-        username = getUsername(),
-        timestamp = os.time()
-    }
-    rednet.broadcast(test_message, PHONE_PROTOCOL)
-    print("Sent phone protocol test...")
-    
-    -- Test security protocol  
-    local security_test = {
-        type = "security_test",
-        from_id = computer_id,
-        username = getUsername(),
-        timestamp = os.time(),
-        password_hash = hashPassword("poggishtown2025")
-    }
-    rednet.broadcast(security_test, SECURITY_PROTOCOL)
-    print("Sent security protocol test...")
-    
-    print("Listening for responses (5 seconds)...")
-    local responses = 0
-    local timeout = os.startTimer(5)
-    
-    while true do
-        local event, param1, param2, param3 = os.pullEvent()
-        if event == "rednet_message" then
-            local sender_id, message, protocol = param1, param2, param3
-            if (message.type == "network_test_response" or message.type == "security_test_response") and sender_id ~= computer_id then
-                responses = responses + 1
-                print("Response from " .. sender_id .. " on " .. protocol)
-            end
-        elseif event == "timer" and param1 == timeout then
-            break
-        end
-    end
-    
-    print("")
-    print("Test complete. " .. responses .. " responses received.")
-    if responses == 0 then
-        print("No responses - check network connections!")
-    end
-    print("Press any key to return...")
-    os.pullEvent("key")
 end
 
 -- Message processing
@@ -556,16 +494,6 @@ local function handleMessage(sender_id, message, protocol)
                     saveData()
                 end
             end
-            
-        elseif message.type == "network_test" and message.from_id ~= computer_id then
-            -- Respond to network tests from other devices
-            local response = {
-                type = "network_test_response",
-                from_id = computer_id,
-                username = getUsername(),
-                timestamp = os.time()
-            }
-            rednet.send(sender_id, response, PHONE_PROTOCOL)
         end
         
     elseif protocol == SECURITY_PROTOCOL then
@@ -581,18 +509,6 @@ local function handleMessage(sender_id, message, protocol)
         -- Also skip if sender is us and no relay info (direct loop)
         if sender_id == computer_id and not message.relayed_by_server then
             addDebugLog("SKIP: Direct loop from ourselves")
-            return
-        end
-        
-        -- Handle network test responses
-        if message.type == "security_test" and message.from_id ~= computer_id then
-            local response = {
-                type = "security_test_response",
-                from_id = computer_id,
-                username = getUsername(),
-                timestamp = os.time()
-            }
-            rednet.send(sender_id, response, SECURITY_PROTOCOL)
             return
         end
         
@@ -746,22 +662,33 @@ local function drawSecurityLoginScreen()
         if password and password ~= "" then
             print("")
             print("Contacting server for authentication...")
+            
+            -- Store initial auth state
+            local initial_auth_state = config.security_authenticated
+            
             requestServerAuthentication(password)
             print("Waiting for server response...")
             
-            local timeout = os.startTimer(5)
-            while true do
-                local event, param1, param2, param3 = os.pullEvent()
-                if event == "rednet_message" then
-                    local sender_id, message, protocol = param1, param2, param3
-                    if protocol == PHONE_PROTOCOL and message.type == "security_auth_response" then
-                        handleMessage(sender_id, message, protocol)
-                        break
+            -- Wait for authentication to change or timeout
+            local start_time = os.time()
+            local timeout_seconds = 10
+            local auth_changed = false
+            
+            while (os.time() - start_time) < timeout_seconds and not auth_changed do
+                sleep(0.5)  -- Check every half second
+                if config.security_authenticated ~= initial_auth_state then
+                    auth_changed = true
+                    if config.security_authenticated then
+                        print("Authentication successful!")
+                    else
+                        print("Authentication failed - incorrect password!")
                     end
-                elseif event == "timer" and param1 == timeout then
-                    print("Server timeout - authentication failed")
-                    break
                 end
+            end
+            
+            if not auth_changed then
+                print("Server timeout - no response received")
+                print("Check server connection and try again")
             end
             
             sleep(2)
@@ -1005,10 +932,9 @@ local function drawSettingsScreen()
     print("6. Request Server Config")
     print("7. Clear All Messages")
     print("8. Debug Log")
-    print("9. Network Test")  -- FIXED: Added network test option
     
     if isSecurityAuthenticated() then
-        print("10. Security Logout")  -- FIXED: Moved to option 10
+        print("9. Security Logout")
     end
     
     print("B. Back")
@@ -1099,12 +1025,6 @@ local function main()
     
     loadData()
     
-    -- Reset security authentication on startup for security
-    config.security_authenticated = false
-    config.security_auth_expires = 0
-    config.allow_emergency_alerts = false
-    addDebugLog("Security auth reset on startup")
-    
     -- Don't prompt for username on startup - user can change it in settings
     -- getUsername() will always return something reasonable
     
@@ -1188,9 +1108,7 @@ local function main()
                 sleep(1)
             elseif input == "8" then
                 showDebugLog()
-            elseif input == "9" then
-                testNetwork()  -- FIXED: Added network test call
-            elseif input == "10" and isSecurityAuthenticated() then  -- FIXED: Moved to option 10
+            elseif input == "9" and isSecurityAuthenticated() then
                 config.security_authenticated = false
                 config.allow_emergency_alerts = false
                 saveData()
