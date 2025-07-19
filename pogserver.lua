@@ -924,8 +924,10 @@ local function handleMessage(sender_id, message, protocol)
                 sendUserList(sender_id)
                 
             elseif message.type == "security_auth_request" then
-                if message.password_hash then
-                    sendPasswordResponse(sender_id, message.password_hash)
+                if message.password_hash and message.user_id then
+                    -- FIXED: Use message.user_id instead of sender_id for proper client identification
+                    sendPasswordResponse(message.user_id, message.password_hash)
+                    log("Processing auth request from sender " .. sender_id .. " for user " .. message.user_id)
                 end
                 
             elseif message.type == "modem_detection_request" then
