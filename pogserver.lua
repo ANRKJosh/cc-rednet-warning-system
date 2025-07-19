@@ -437,65 +437,87 @@ local function handleMessage(sender_id, message, protocol)
     end
 end
 
+-- Helper function to count table entries
+local function tableCount(t)
+    local count = 0
+    for _ in pairs(t) do count = count + 1 end
+    return count
+end
+
 -- Status display
 local function drawServerStatus()
     term.clear()
     term.setCursorPos(1, 1)
     
+    local w, h = term.getSize()
+    
     print("=== POGGISHTOWN SERVER ===")
-    print("Server: " .. config.server_name)
-    print("ID: " .. computer_id)
-    print("Uptime: " .. math.floor((os.time() - server_stats.uptime_start) / 3600) .. "h " .. 
-          math.floor(((os.time() - server_stats.uptime_start) % 3600) / 60) .. "m")
+    print("Server: " .. string.sub(config.server_name, 1, 20))
+    print("ID: " .. computer_id .. " | Up: " .. math.floor((os.time() - server_stats.uptime_start) / 60) .. "m")
     print("")
     
-    -- Connection info
-    print("Network:")
-    print("  Modem: " .. (modem_side or "None") .. (hasEnderModem() and " (Ender)" or " (Wireless)"))
-    print("  Protocols: " .. PHONE_PROTOCOL .. ", " .. SECURITY_PROTOCOL)
+    -- Network info (compact)
+    print("Network: " .. (modem_side or "None") .. (hasEnderModem() and " (Ender)" or " (WiFi)"))
     print("")
     
-    -- Statistics
-    print("Statistics:")
-    print("  Connected Users: " .. table.getn(connected_users))
-    print("  Messages Relayed: " .. server_stats.messages_relayed)
-    print("  Users Served: " .. server_stats.users_served)
-    print("  Security Alerts: " .. server_stats.security_alerts)
-    print("  Stored Messages: " .. #stored_messages)
+    -- Statistics (compact)
+    print("Stats:")
+    print("  Users: " .. tableCount(connected_users) .. " | Messages: " .. server_stats.messages_relayed)
+    print("  Alerts: " .. server_stats.security_alerts .. " | Stored: " .. #stored_messages)
     print("")
     
-    -- Services status
+    -- Services status (compact)
     print("Services:")
+    local relay_status = config.auto_relay_messages and "ON" or "OFF"
+    local app_status = config.app_repository_enabled and "ON" or "OFF"
+    local sec_status = config.security_monitoring and "ON" or "OFF"
+    
     term.setTextColor(config.auto_relay_messages and colors.green or colors.red)
-    print("  Message Relay: " .. (config.auto_relay_messages and "ACTIVE" or "DISABLED"))
+    print("  Relay:" .. relay_status)
     term.setTextColor(config.app_repository_enabled and colors.green or colors.red)
-    print("  App Repository: " .. (config.app_repository_enabled and "ACTIVE" or "DISABLED"))
+    print("  Apps:" .. app_status)
     term.setTextColor(config.security_monitoring and colors.green or colors.red)
-    print("  Security Monitor: " .. (config.security_monitoring and "ACTIVE" or "DISABLED"))
+    print("  Security:" .. sec_status)
     term.setTextColor(colors.white)
     print("")
     
-    -- Recent activity
-    if #connected_users > 0 then
-        print("Connected Users:")
-        local user_list = {}
+    -- Active security alerts
+    local active_alarms = 0
+    for node_id, node_data in pairs(security_nodes) do
+        if node_data.alarm_active then
+            active_alarms = active_alarms + 1
+        end
+    end
+    
+    if active_alarms > 0 then
+        term.setTextColor(colors.red)
+        print("! ACTIVE ALARMS: " .. active_alarms .. " !")
+        term.setTextColor(colors.white)
+    end
+    
+    -- Connected users (compact)
+    local user_count = tableCount(connected_users)
+    if user_count > 0 then
+        print("Users (" .. user_count .. "):")
+        local shown = 0
         for user_id, user_data in pairs(connected_users) do
-            table.insert(user_list, user_data.username .. " (" .. user_data.device_type .. ")")
+            if shown < 3 then
+                local name = string.sub(user_data.username, 1, 12)
+                local device = string.sub(user_data.device_type, 1, 1):upper()
+                print("  [" .. device .. "] " .. name)
+                shown = shown + 1
+            end
         end
-        table.sort(user_list)
-        
-        for i = 1, math.min(5, #user_list) do
-            print("  " .. user_list[i])
-        end
-        if #user_list > 5 then
-            print("  ... and " .. (#user_list - 5) .. " more")
+        if user_count > 3 then
+            print("  +" .. (user_count - 3) .. " more")
         end
     else
-        print("No users connected")
+        print("No users online")
     end
     
     print("")
-    print("Commands: S-Status | L-Logs | U-Users | A-Apps | C-Config | Q-Quit")
+    print("Keys: S-Status L-Logs U-Users")
+    print("      A-Apps C-Config Q-Quit")
 end
 
 local function showDetailedLogs()
@@ -726,7 +748,7 @@ local function main()
         drawServerStatus()
         
         -- Handle events with timeout
-        local event_timeout = os.startTimer(1)
+        local result = nil
         
         parallel.waitForAny(
             function()
@@ -737,16 +759,27 @@ local function main()
                         local key = param1
                         if key == keys.s then
                             drawServerStatus()
+                            result = "continue"
+                            return
                         elseif key == keys.l then
                             showDetailedLogs()
+                            result = "continue"
+                            return
                         elseif key == keys.u then
                             showUserDetails()
+                            result = "continue"
+                            return
                         elseif key == keys.a then
                             showAppRepository()
+                            result = "continue"
+                            return
                         elseif key == keys.c then
                             configureServer()
+                            result = "continue"
+                            return
                         elseif key == keys.q then
-                            return "quit"
+                            result = "quit"
+                            return
                         end
                         
                     elseif event == "rednet_message" then
@@ -771,12 +804,12 @@ local function main()
                 end
             end,
             function()
-                os.pullEvent("timer")  -- Wait for timeout
+                sleep(5)  -- Refresh screen every 5 seconds
             end
         )
         
         -- Check if quit was requested
-        if event and event == "quit" then
+        if result == "quit" then
             break
         end
     end
