@@ -884,6 +884,9 @@ end
 
 -- Enhanced message processing with comprehensive error handling
 local function handleMessage(sender_id, message, protocol)
+    -- DEBUG: Log ALL incoming messages
+    log("INCOMING: " .. protocol .. "/" .. (message.type or "?") .. " from " .. sender_id, "DEBUG")
+    
     -- Wrap entire message handling in error protection
     local success, error_msg = pcall(function()
         if protocol == PHONE_PROTOCOL then
