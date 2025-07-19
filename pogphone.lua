@@ -70,9 +70,6 @@ local auth_last_result = nil
 -- Debug logging
 debug_log = debug_log or {}
 
--- Debug logging
-debug_log = debug_log or {}
-
 local function addDebugLog(message)
     if not debug_log then debug_log = {} end
     
@@ -287,6 +284,8 @@ local function requestModemConfiguration()
         current_type = config.modem_type_override,
         timestamp = os.time()
     }
+    
+    addDebugLog("CONFIG: Sending modem detection request on protocol " .. PHONE_PROTOCOL)
     rednet.broadcast(message, PHONE_PROTOCOL)
 end
 
@@ -417,6 +416,7 @@ local function requestAlarmSync()
     }
     rednet.broadcast(message, SECURITY_PROTOCOL)
 end
+
 -- Network communication
 local function broadcastPresence()
     local message = {
@@ -453,11 +453,44 @@ local function requestUserList()
     rednet.broadcast(message, PHONE_PROTOCOL)
 end
 
+-- Network test function
+local function performNetworkTest()
+    print("=== NETWORK TEST ===")
+    print("Testing basic network connectivity...")
+    print("")
+    
+    local test_message = {
+        type = "network_test",
+        from_user = computer_id,
+        test_data = "Hello from " .. getUsername(),
+        timestamp = os.time()
+    }
+    
+    addDebugLog("NET_TEST: Sending network test on " .. PHONE_PROTOCOL)
+    rednet.broadcast(test_message, PHONE_PROTOCOL)
+    
+    print("Test message sent. Checking protocols:")
+    print("PHONE_PROTOCOL = '" .. PHONE_PROTOCOL .. "'")
+    print("SECURITY_PROTOCOL = '" .. SECURITY_PROTOCOL .. "'")
+    print("Computer ID = " .. computer_id)
+    print("Modem side = " .. (modem_side or "none"))
+    print("")
+    print("Check server logs for received test message.")
+    print("Press any key to continue...")
+    os.pullEvent("key")
+end
+
 -- Message processing
 local function handleMessage(sender_id, message, protocol)
-    -- Debug: Log ALL messages when auth is pending
+    -- Debug: Log ALL messages with full details
     if auth_request_pending then
         addDebugLog("MSG: " .. protocol .. "/" .. (message.type or "?") .. " from " .. sender_id)
+        -- Also log if it's the right protocol
+        if protocol == PHONE_PROTOCOL then
+            addDebugLog("PHONE_PROTO: Correct protocol match")
+        else
+            addDebugLog("OTHER_PROTO: Protocol mismatch - got " .. protocol .. " expected " .. PHONE_PROTOCOL)
+        end
     end
     
     if protocol == PHONE_PROTOCOL then
@@ -527,11 +560,16 @@ local function handleMessage(sender_id, message, protocol)
             end
             
         elseif message.type == "modem_detection_response" then
+            addDebugLog("CONFIG: Received modem detection response")
             if message.recommended_type and message.recommended_type ~= "auto" then
                 config.modem_type_override = message.recommended_type
                 config.force_ender_modem = message.force_ender or false
                 saveData()
+                addDebugLog("CONFIG: Updated modem type to " .. message.recommended_type)
             end
+            
+        elseif message.type == "network_test_response" then
+            addDebugLog("NET_TEST: Received network test response from server")
             
         elseif message.type == "config_update" then
             if message.config_data then
@@ -545,6 +583,11 @@ local function handleMessage(sender_id, message, protocol)
                 if updated then
                     saveData()
                 end
+            end
+        else
+            -- Log any unhandled phone protocol messages when auth is pending
+            if auth_request_pending then
+                addDebugLog("UNHANDLED: " .. (message.type or "unknown_type") .. " from " .. sender_id)
             end
         end
         
@@ -710,7 +753,7 @@ local function drawSecurityLoginScreen()
         local elapsed = os.clock() - auth_request_start_time
         print("Elapsed: " .. math.floor(elapsed) .. " seconds")
         
-        -- Check for timeout
+        -- Check for timeout (10 seconds)
         if elapsed > 10 then
             auth_request_pending = false
             auth_last_result = "timeout"
@@ -951,372 +994,4 @@ local function handleEmergencyScreenInput()
             if success then
                 print("LOCKDOWN ALERT SENT!")
             else
-                print("Failed: " .. message)
-            end
-            sleep(2)
-        elseif input:lower() == "c" then
-            local success, message = sendSecurityCancel()
-            print("")
-            if success then
-                print("CANCEL SIGNAL SENT!")
-                -- Force clear our own alarm immediately
-                active_alarms = {}
-            else
-                print("Failed: " .. message)
-            end
-            sleep(2)
-        end
-    end
-end
-
-local function showDebugLog()
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("=== DEBUG LOG ===")
-    print("Config Username: " .. tostring(config.username))
-    print("Current Username: " .. getUsername())
-    print("Security Auth: " .. tostring(isSecurityAuthenticated()))
-    
-    -- Count active alarms
-    local alarm_count = 0
-    for _ in pairs(active_alarms) do alarm_count = alarm_count + 1 end
-    print("Active Alarms: " .. alarm_count)
-    print("")
-    
-    print("Security Message Log:")
-    if debug_log and #debug_log > 0 then
-        for _, entry in ipairs(debug_log) do
-            print("  " .. entry)
-        end
-    else
-        print("  No messages logged yet")
-    end
-    
-    print("")
-    print("Files:")
-    print("  " .. CONFIG_FILE .. ": " .. (fs.exists(CONFIG_FILE) and "EXISTS" or "MISSING"))
-    print("  " .. CONTACTS_FILE .. ": " .. (fs.exists(CONTACTS_FILE) and "EXISTS" or "MISSING"))
-    print("  " .. MESSAGES_FILE .. ": " .. (fs.exists(MESSAGES_FILE) and "EXISTS" or "MISSING"))
-    
-    print("")
-    print("Press any key to return...")
-    os.pullEvent("key")
-end
-
-local function drawSettingsScreen()
-    term.clear()
-    term.setCursorPos(1, 1)
-    drawHeader()
-    
-    print("Settings:")
-    print("1. Username: " .. getUsername())
-    print("2. Notifications: " .. (config.notification_sound and "ON" or "OFF"))
-    print("3. Vibrate: " .. (config.vibrate_on_message and "ON" or "OFF"))
-    print("4. Compact Mode: " .. (config.compact_mode and "ON" or "OFF"))
-    print("5. Modem Type: " .. config.modem_type_override)
-    print("6. Request Server Config")
-    print("7. Clear All Messages")
-    print("8. Debug Log")
-    print("9. Test Auth Status")
-    
-    if isSecurityAuthenticated() then
-        print("10. Security Logout")
-    end
-    
-    print("B. Back")
-    print("")
-    print("Enter choice:")
-end
-
--- Input handling
-local function handleMainScreenInput()
-    local input = read()
-    
-    if input == "1" then
-        current_screen = "messages"
-    elseif input == "2" then
-        current_screen = "contacts"
-    elseif input == "3" then
-        current_screen = "online_users"
-        requestUserList()
-    elseif input == "4" then
-        current_screen = "emergency"  -- Always go to emergency screen
-    elseif input == "5" then
-        current_screen = "settings"
-    elseif input == "6" then
-        current_screen = "about"
-    elseif input:lower() == "q" and is_terminal then
-        return false
-    end
-    return true
-end
-
-local function sendNewMessage()
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("=== NEW MESSAGE ===")
-    print("")
-    
-    local user_list = {}
-    for id, user in pairs(online_users) do
-        if id ~= computer_id then
-            table.insert(user_list, {id = id, data = user})
-        end
-    end
-    
-    if #user_list == 0 then
-        print("No users online.")
-        print("Press any key to return...")
-        os.pullEvent("key")
-        return
-    end
-    
-    print("Online Users:")
-    for i, user in ipairs(user_list) do
-        print(i .. ". " .. user.data.username)
-    end
-    
-    print("")
-    print("Enter user number:")
-    local user_choice = tonumber(read())
-    
-    if user_choice and user_choice >= 1 and user_choice <= #user_list then
-        local target_user = user_list[user_choice]
-        print("")
-        print("To: " .. target_user.data.username)
-        print("Message:")
-        local message_content = read()
-        
-        if message_content and message_content ~= "" then
-            sendDirectMessage(target_user.id, message_content)
-            print("")
-            print("Message sent!")
-            sleep(1)
-        end
-    end
-end
-
--- Main application loop
-local function main()
-    -- Initialize debug log if not already initialized
-    if not debug_log then
-        debug_log = {}
-    end
-    
-    if not initializeModem() then
-        print("ERROR: No modem found!")
-        print("Please attach a wireless modem.")
-        return
-    end
-    
-    loadData()
-    
-    -- Don't prompt for username on startup - user can change it in settings
-    -- getUsername() will always return something reasonable
-    
-    print("PoggishTown Phone Starting...")
-    print("User: " .. getUsername())
-    print("Device: " .. (is_terminal and "Terminal" or "Computer"))
-    print("Modem: " .. (modem_side or "None") .. " (" .. config.modem_type_override .. ")")
-    sleep(1)
-    
-    broadcastPresence()
-    requestUserList()
-    
-    -- Request alarm sync if authenticated
-    if isSecurityAuthenticated() then
-        requestAlarmSync()
-        print("Requesting alarm sync...")
-        sleep(1)
-    end
-    
-    current_screen = "main"
-    local presence_timer = os.startTimer(30)
-    local refresh_timer = os.startTimer(1)  -- Short timer for screen refreshes
-    
-    while true do
-        if current_screen == "main" then
-            drawMainScreen()
-            if not handleMainScreenInput() then
-                break
-            end
-        elseif current_screen == "security_login" then
-            drawSecurityLoginScreen()
-            
-            -- Always handle input, even when auth is pending
-            if auth_request_pending then
-                -- Check for timeout first
-                local elapsed = os.clock() - auth_request_start_time
-                if elapsed > 10 then
-                    auth_request_pending = false
-                    auth_last_result = "timeout"
-                    addDebugLog("AUTH: Timeout after " .. math.floor(elapsed) .. " seconds")
-                else
-                    -- Allow cancellation while waiting
-                    local event, key = os.pullEventRaw("key")
-                    if key == keys.b then
-                        auth_request_pending = false
-                        addDebugLog("AUTH: Cancelled by user")
-                        current_screen = "main"
-                    end
-                end
-            elseif auth_last_result then
-                -- Wait for any key when showing result
-                os.pullEvent("key")
-                current_screen = "main"  -- Go back to main after showing result
-            else
-                local input = read()
-                if input:lower() == "b" then
-                    current_screen = "main"
-                elseif input:lower() == "l" and isSecurityAuthenticated() then
-                    config.security_authenticated = false
-                    config.allow_emergency_alerts = false
-                    saveData()
-                    current_screen = "main"
-                end
-            end
-        elseif current_screen == "emergency" then
-            drawEmergencyScreen()
-            
-            -- Don't block if auth is pending - let background processing continue
-            if not auth_request_pending then
-                handleEmergencyScreenInput()
-            end
-        elseif current_screen == "settings" then
-            drawSettingsScreen()
-            local input = read()
-            if input:lower() == "b" then
-                current_screen = "main"
-            elseif input == "1" then
-                setUsername()
-            elseif input == "2" then
-                config.notification_sound = not config.notification_sound
-                saveData()
-            elseif input == "3" then
-                config.vibrate_on_message = not config.vibrate_on_message
-                saveData()
-            elseif input == "4" then
-                config.compact_mode = not config.compact_mode
-                saveData()
-            elseif input == "5" then
-                print("")
-                print("Modem type (auto/ender/wireless):")
-                local modem_type = read()
-                if modem_type and (modem_type == "auto" or modem_type == "ender" or modem_type == "wireless") then
-                    config.modem_type_override = modem_type
-                    config.force_ender_modem = (modem_type == "ender")
-                    saveData()
-                    print("Modem type set to: " .. modem_type)
-                    print("Restart to apply changes")
-                    sleep(2)
-                end
-            elseif input == "6" then
-                print("")
-                print("Requesting configuration from server...")
-                requestModemConfiguration()
-                sleep(2)
-            elseif input == "7" then
-                messages = {}
-                unread_count = 0
-                saveData()
-                print("All messages cleared!")
-                sleep(1)
-            elseif input == "8" then
-                showDebugLog()
-            elseif input == "9" then
-                -- Test auth status
-                print("")
-                print("=== AUTH STATUS TEST ===")
-                print("Computer ID: " .. computer_id)
-                print("Auth pending: " .. tostring(auth_request_pending))
-                print("Auth result: " .. tostring(auth_last_result))
-                print("Is authenticated: " .. tostring(isSecurityAuthenticated()))
-                print("Config auth: " .. tostring(config.security_authenticated))
-                print("Auth expires: " .. tostring(config.security_auth_expires))
-                print("Current time: " .. tostring(os.time()))
-                print("Allow emergency: " .. tostring(config.allow_emergency_alerts))
-                print("")
-                print("Press any key to continue...")
-                os.pullEvent("key")
-            elseif input == "10" and isSecurityAuthenticated() then
-                config.security_authenticated = false
-                config.allow_emergency_alerts = false
-                saveData()
-                print("")
-                print("Logged out of security features")
-                sleep(1)
-            end
-        elseif current_screen == "messages" then
-            term.clear()
-            term.setCursorPos(1, 1)
-            drawHeader()
-            print("Messages feature - under construction")
-            print("Press any key to return...")
-            os.pullEvent("key")
-            current_screen = "main"
-        elseif current_screen == "contacts" then
-            term.clear()
-            term.setCursorPos(1, 1)
-            drawHeader()
-            print("Contacts feature - under construction")
-            print("Press any key to return...")
-            os.pullEvent("key")
-            current_screen = "main"
-        elseif current_screen == "online_users" then
-            term.clear()
-            term.setCursorPos(1, 1)
-            drawHeader()
-            print("Online users feature - under construction")
-            print("Press any key to return...")
-            os.pullEvent("key")
-            current_screen = "main"
-        elseif current_screen == "about" then
-            term.clear()
-            term.setCursorPos(1, 1)
-            print("=== ABOUT ===")
-            print("PoggishTown Phone v2.0")
-            print("Modern messaging with security integration")
-            print("")
-            print("Features:")
-            print("- Server-based authentication")
-            print("- Emergency alert system")
-            print("- Configurable modem detection")
-            print("- Contact management")
-            print("- Real-time messaging")
-            print("")
-            print("Press any key to return...")
-            os.pullEvent("key")
-            current_screen = "main"
-        end
-        
-        -- Handle background events
-        parallel.waitForAny(
-            function()
-                while true do
-                    local event, param1, param2, param3 = os.pullEvent()
-                    
-                    if event == "rednet_message" then
-                        local sender_id, message, protocol = param1, param2, param3
-                        if protocol == PHONE_PROTOCOL or protocol == SECURITY_PROTOCOL then
-                            handleMessage(sender_id, message, protocol)
-                        end
-                    elseif event == "timer" and param1 == presence_timer then
-                        broadcastPresence()
-                        presence_timer = os.startTimer(30)
-                    elseif event == "timer" and param1 == refresh_timer then
-                        refresh_timer = os.startTimer(1)  -- Standard 1 second refresh
-                    end
-                end
-            end,
-            function()
-                sleep(0.1)  -- Keep this short to ensure responsiveness
-            end
-        )
-    end
-    
-    print("PoggishTown Phone shutting down...")
-    saveData()
-end
-
--- Run the application
-main()
+                print("Failed
