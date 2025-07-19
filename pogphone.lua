@@ -2,6 +2,132 @@
 -- Modern messaging and communication system
 -- Protocol: pogphone (separate from security system)
 
+local function drawEmergencyScreen()
+    if not isSecurityAuthenticated() then
+        drawSecurityLoginScreen()
+        return
+    end
+    
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== EMERGENCY ALERTS ===")
+    print("User: " .. getUsername())
+    print("")
+    
+    -- Show active alarms
+    local alarm_count = 0
+    for source_id, alarm_data in pairs(active_alarms) do
+        alarm_count = alarm_count + 1
+        term.setTextColor(colors.red)
+        print("ACTIVE: " .. string.upper(alarm_data.type))
+        term.setTextColor(colors.white)
+        print("  From: " .. alarm_data.source_name)
+        print("  Time: " .. textutils.formatTime(alarm_data.start_time, true))
+        print("")
+    end
+    
+    if alarm_count == 0 then
+        term.setTextColor(colors.green)
+        print("All Clear - No Active Alarms")
+        term.setTextColor(colors.white)
+        print("")
+    end
+    
+    -- Show security nodes
+    local node_count = 0
+    for _ in pairs(security_nodes) do node_count = node_count + 1 end
+    
+    if node_count > 0 then
+        print("Security Nodes (" .. node_count .. "):")
+        for node_id, node_data in pairs(security_nodes) do
+            local status = node_data.alarm_active and "[ALARM]" or "[OK]"
+            local time_ago = os.time() - node_data.last_seen
+            if time_ago < 60 then
+                if node_data.alarm_active then
+                    term.setTextColor(colors.red)
+                else
+                    term.setTextColor(colors.green)
+                end
+                print("  " .. node_data.device_name .. " " .. status)
+                term.setTextColor(colors.white)
+            end
+        end
+        print("")
+    end
+    
+    if config.allow_emergency_alerts then
+        print("Send Alert:")
+        print("G - General Alert")
+        print("E - Evacuation Alert")
+        print("L - Lockdown Alert")
+        if alarm_count > 0 then
+            print("C - Cancel All Alarms")
+        end
+        print("")
+    else
+        term.setTextColor(colors.yellow)
+        print("Emergency alerts disabled")
+        term.setTextColor(colors.white)
+        print("")
+    end
+    
+    print("R - Refresh | B - Back")
+end    elseif protocol == SECURITY_PROTOCOL then
+        -- Handle security system messages (only if authenticated)
+        if isSecurityAuthenticated() then
+            if message.type == "security_alert" then
+                if message.action == "start" then
+                    active_alarms[message.source_id] = {
+                        type = message.alarm_type or "general",
+                        source_name = message.source_name or ("Node-" .. message.source_id),
+                        start_time = message.timestamp or os.time()
+                    }
+                    
+                    -- Notification for security alerts
+                    if config.notification_sound and speaker then
+                        speaker.playNote("pling", 3.0, 12)  -- High pitched alert
+                    end
+                    if config.vibrate_on_message and is_terminal then
+                        -- More intense vibration for security alerts
+                        local original_bg = term.getBackgroundColor()
+                        for i = 1, 4 do
+                            term.setBackgroundColor(colors.red)
+                            term.clear()
+                            sleep(0.05)
+                            term.setBackgroundColor(original_bg)
+                            term.clear()
+                            sleep(0.05)
+                        end
+                    end
+                    
+                elseif message.action == "stop" then
+                    active_alarms[message.source_id] = nil
+                end
+                
+            elseif message.type == "security_heartbeat" then
+                security_nodes[message.computer_id] = {
+                    device_name = message.device_name or ("Node-" .. message.computer_id),
+                    device_type = message.device_type or "computer",
+                    last_seen = os.time(),
+                    alarm_active = message.alarm_active,
+                    alarm_type = message.alarm_type
+                }
+                
+                -- Update active alarms from heartbeat
+                if message.alarm_active then
+                    active_alarms[message.computer_id] = {
+                        type = message.alarm_type or "general",
+                        source_name = message.device_name or ("Node-" .. message.computer_id),
+                        start_time = message.alarm_start_time or os.time()
+                    }
+                else
+                    active_alarms[message.computer_id] = nil
+                end
+            end
+        end
+    end
+end
+
 local PHONE_PROTOCOL = "pogphone"
 local SECURITY_PROTOCOL = "pogalert"  -- Add security protocol
 local CONFIG_FILE = "pogphone_config"
@@ -37,9 +163,13 @@ local config = {
     vibrate_on_message = true,
     compact_mode = false,
     update_url = "https://raw.githubusercontent.com/your-repo/poggishtown-phone.lua",
-    -- Security integration
-    security_password = "poggishtown2025",  -- Default security password
-    allow_emergency_alerts = true           -- Allow sending emergency alerts
+    -- Security integration (no hardcoded password)
+    security_authenticated = false,      -- Authentication status
+    security_auth_expires = 0,          -- When authentication expires
+    allow_emergency_alerts = false,     -- Disabled until authenticated
+    -- Modem configuration
+    modem_type_override = "auto",       -- auto, ender, wireless
+    force_ender_modem = false          -- Force ender modem usage
 }
 
 -- Global state
@@ -142,7 +272,32 @@ end
 
 -- Modem setup
 local function initializeModem()
-    -- Assume ender modem for terminals, find any modem for computers
+    -- Check for modem type override first
+    if config.modem_type_override ~= "auto" then
+        for _, side in pairs(peripheral.getNames()) do
+            if peripheral.getType(side) == "modem" then
+                local modem = peripheral.wrap(side)
+                if config.modem_type_override == "ender" then
+                    -- Check if this is an ender modem
+                    if modem and ((modem.isWireless and not modem.isWireless()) or not modem.isWireless) then
+                        modem_side = side
+                        rednet.open(side)
+                        return true
+                    end
+                elseif config.modem_type_override == "wireless" then
+                    -- Check if this is a wireless modem
+                    if modem and modem.isWireless and modem.isWireless() then
+                        modem_side = side
+                        rednet.open(side)
+                        return true
+                    end
+                end
+            end
+        end
+        -- If override specified but not found, fall back to auto
+    end
+    
+    -- Auto-detection: prefer ender for terminals, any for computers
     for _, side in pairs(peripheral.getNames()) do
         if peripheral.getType(side) == "modem" then
             modem_side = side
@@ -153,7 +308,7 @@ local function initializeModem()
     return false
 end
 
--- Security integration functions
+-- Server authentication functions
 local function hashPassword(password)
     local hash = 0
     for i = 1, #password do
@@ -162,9 +317,37 @@ local function hashPassword(password)
     return tostring(hash)
 end
 
+local function requestServerAuthentication(password)
+    local message = {
+        type = "security_auth_request",
+        password_hash = hashPassword(password),
+        user_id = computer_id,
+        username = getUsername(),
+        timestamp = os.time()
+    }
+    
+    rednet.broadcast(message, PHONE_PROTOCOL)
+    return true
+end
+
+local function requestModemConfiguration()
+    local message = {
+        type = "modem_detection_request",
+        user_id = computer_id,
+        current_type = config.modem_type_override,
+        timestamp = os.time()
+    }
+    
+    rednet.broadcast(message, PHONE_PROTOCOL)
+end
+
+local function isSecurityAuthenticated()
+    return config.security_authenticated and os.time() < config.security_auth_expires
+end
+
 local function sendSecurityAlert(alarm_type)
-    if not config.allow_emergency_alerts then
-        return false, "Emergency alerts disabled"
+    if not config.allow_emergency_alerts or not isSecurityAuthenticated() then
+        return false, "Not authenticated for emergency alerts"
     end
     
     local message = {
@@ -178,7 +361,7 @@ local function sendSecurityAlert(alarm_type)
         message_id = computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999),
         hops = 0,
         device_type = is_terminal and "terminal" or "computer",
-        password_hash = hashPassword(config.security_password)
+        authenticated_user = true  -- Mark as authenticated
     }
     
     rednet.broadcast(message, SECURITY_PROTOCOL)
@@ -186,8 +369,8 @@ local function sendSecurityAlert(alarm_type)
 end
 
 local function sendSecurityCancel()
-    if not config.allow_emergency_alerts then
-        return false, "Emergency alerts disabled"
+    if not config.allow_emergency_alerts or not isSecurityAuthenticated() then
+        return false, "Not authenticated for emergency alerts"
     end
     
     local message = {
@@ -200,7 +383,7 @@ local function sendSecurityCancel()
         message_id = computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999),
         hops = 0,
         device_type = is_terminal and "terminal" or "computer",
-        password_hash = hashPassword(config.security_password)
+        authenticated_user = true  -- Mark as authenticated
     }
     
     rednet.broadcast(message, SECURITY_PROTOCOL)
@@ -378,6 +561,46 @@ local function handleMessage(sender_id, message, protocol)
                 print("UPDATE AVAILABLE: " .. message.app_name)
                 print("URL: " .. message.download_url)
             end
+            
+        elseif message.type == "security_auth_response" then
+            -- Handle authentication response from server
+            if message.authenticated then
+                config.security_authenticated = true
+                config.security_auth_expires = message.expires or (os.time() + 3600)
+                config.allow_emergency_alerts = true
+                saveData()
+                print("Security authentication successful!")
+            else
+                config.security_authenticated = false
+                config.allow_emergency_alerts = false
+                saveData()
+                print("Security authentication failed!")
+            end
+            
+        elseif message.type == "modem_detection_response" then
+            -- Handle modem configuration response
+            if message.recommended_type and message.recommended_type ~= "auto" then
+                config.modem_type_override = message.recommended_type
+                config.force_ender_modem = message.force_ender or false
+                saveData()
+                print("Modem configuration updated: " .. message.recommended_type)
+            end
+            
+        elseif message.type == "config_update" then
+            -- Handle server config updates
+            if message.config_data then
+                local updated = false
+                for key, value in pairs(message.config_data) do
+                    if config[key] ~= nil then
+                        config[key] = value
+                        updated = true
+                    end
+                end
+                if updated then
+                    saveData()
+                    print("Configuration updated by server")
+                end
+            end
         end
         
     elseif protocol == SECURITY_PROTOCOL then
@@ -455,24 +678,35 @@ local function drawMainScreen()
     term.setCursorPos(1, 1)
     drawHeader()
     
-    -- Show active alarms prominently
-    local alarm_count = 0
-    for _ in pairs(active_alarms) do alarm_count = alarm_count + 1 end
-    
-    if alarm_count > 0 then
-        term.setTextColor(colors.red)
-        print("!!! " .. alarm_count .. " ACTIVE ALARMS !!!")
-        term.setTextColor(colors.white)
-        print("")
+    -- Show active alarms prominently (only if authenticated)
+    if isSecurityAuthenticated() then
+        local alarm_count = 0
+        for _ in pairs(active_alarms) do alarm_count = alarm_count + 1 end
+        
+        if alarm_count > 0 then
+            term.setTextColor(colors.red)
+            print("!!! " .. alarm_count .. " ACTIVE ALARMS !!!")
+            term.setTextColor(colors.white)
+            print("")
+        end
     end
     
     print("Main Menu:")
     print("1. Messages (" .. unread_count .. " unread)")
     print("2. Contacts (" .. #contacts .. " saved)")
     print("3. Online Users")
-    print("4. Emergency Alerts")  -- New option
-    print("5. Settings")
-    print("6. About")
+    
+    -- Only show emergency alerts if authenticated
+    if isSecurityAuthenticated() then
+        print("4. Emergency Alerts")
+        print("5. Settings")
+        print("6. About")
+    else
+        print("4. Security Login")
+        print("5. Settings")
+        print("6. About")
+    end
+    
     if is_terminal then
         print("Q. Quit")
     end
@@ -535,7 +769,62 @@ local function drawMessagesScreen()
     print("Enter number to open, M for new message, B to go back:")
 end
 
-local function drawEmergencyScreen()
+local function drawSecurityLoginScreen()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== SECURITY LOGIN ===")
+    print("User: " .. getUsername())
+    print("")
+    
+    if isSecurityAuthenticated() then
+        term.setTextColor(colors.green)
+        print("Status: AUTHENTICATED")
+        term.setTextColor(colors.white)
+        local expires_in = config.security_auth_expires - os.time()
+        print("Expires in: " .. math.floor(expires_in / 60) .. " minutes")
+        print("")
+        print("Emergency alerts are enabled.")
+        print("")
+        print("L - Logout | B - Back")
+    else
+        term.setTextColor(colors.red)
+        print("Status: NOT AUTHENTICATED")
+        term.setTextColor(colors.white)
+        print("")
+        print("Enter security password to access")
+        print("emergency alert features:")
+        print("")
+        print("Password:")
+        
+        local password = read("*")
+        if password and password ~= "" then
+            print("")
+            print("Contacting server for authentication...")
+            requestServerAuthentication(password)
+            print("Waiting for server response...")
+            
+            -- Wait for authentication response
+            local timeout = os.startTimer(5)
+            while true do
+                local event, param1, param2, param3 = os.pullEvent()
+                if event == "rednet_message" then
+                    local sender_id, message, protocol = param1, param2, param3
+                    if protocol == PHONE_PROTOCOL and message.type == "security_auth_response" then
+                        handleMessage(sender_id, message, protocol)
+                        break
+                    end
+                elseif event == "timer" and param1 == timeout then
+                    print("Server timeout - authentication failed")
+                    break
+                end
+            end
+            
+            sleep(2)
+        else
+            print("B - Back")
+        end
+    end
+end
     term.clear()
     term.setCursorPos(1, 1)
     print("=== EMERGENCY ALERTS ===")
@@ -661,10 +950,16 @@ local function drawSettingsScreen()
     print("2. Notifications: " .. (config.notification_sound and "ON" or "OFF"))
     print("3. Vibrate: " .. (config.vibrate_on_message and "ON" or "OFF"))
     print("4. Compact Mode: " .. (config.compact_mode and "ON" or "OFF"))
-    print("5. Emergency Alerts: " .. (config.allow_emergency_alerts and "ON" or "OFF"))
-    print("6. Security Password: " .. string.rep("*", #config.security_password))
+    print("5. Modem Type: " .. config.modem_type_override)
+    print("6. Request Server Config")
     print("7. Clear All Messages")
     print("8. Export Contacts")
+    
+    -- Only show security logout if authenticated
+    if isSecurityAuthenticated() then
+        print("9. Security Logout")
+    end
+    
     print("B. Back")
     print("")
     print("Enter choice:")
@@ -682,7 +977,11 @@ local function handleMainScreenInput()
         current_screen = "online_users"
         requestUserList()
     elseif input == "4" then
-        current_screen = "emergency"
+        if isSecurityAuthenticated() then
+            current_screen = "emergency"
+        else
+            current_screen = "security_login"
+        end
     elseif input == "5" then
         current_screen = "settings"
     elseif input == "6" then
