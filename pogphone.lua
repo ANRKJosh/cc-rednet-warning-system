@@ -1258,15 +1258,8 @@ local function main()
                     auth_request_pending = false
                     auth_last_result = "timeout"
                     addDebugLog("AUTH: Timeout after " .. math.floor(elapsed) .. " seconds")
-                else
-                    -- Allow cancellation while waiting
-                    local event, key = os.pullEventRaw("key")
-                    if key == keys.b then
-                        auth_request_pending = false
-                        addDebugLog("AUTH: Cancelled by user")
-                        current_screen = "main"
-                    end
                 end
+                -- DON'T block here - let the main event loop continue to process rednet messages
             elseif auth_last_result then
                 -- Wait for any key when showing result
                 os.pullEvent("key")
