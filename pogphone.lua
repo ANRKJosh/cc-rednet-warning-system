@@ -193,7 +193,8 @@ local function setUsername()
     term.clear()
     term.setCursorPos(1, 1)
     print("=== Setup Username ===")
-    print("Current: " .. getUsername())
+    local current = getUsername()
+    print("Current: " .. current)
     print("")
     print("Enter new username (or press Enter to keep current):")
     
@@ -204,7 +205,14 @@ local function setUsername()
         print("Username set to: " .. new_name)
         sleep(1)
     else
-        print("Username unchanged.")
+        -- Save the current username if not already saved
+        if not config.username then
+            config.username = current
+            saveData()
+            print("Username saved as: " .. current)
+        else
+            print("Username unchanged: " .. current)
+        end
         sleep(1)
     end
 end
@@ -938,10 +946,8 @@ local function main()
     
     loadData()
     
-    -- Simple check - only prompt if config.username is nil or empty
-    if config.username == nil or config.username == "" then
-        setUsername()
-    end
+    -- Don't prompt for username on startup - user can change it in settings
+    -- getUsername() will always return something reasonable
     
     print("PoggishTown Phone Starting...")
     print("User: " .. getUsername())
