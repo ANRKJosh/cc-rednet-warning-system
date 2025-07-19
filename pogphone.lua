@@ -177,6 +177,37 @@ local function initializeModem()
     return false
 end
 
+-- Username management
+local function getUsername()
+    if config.username then
+        return config.username
+    end
+    local label = os.getComputerLabel()
+    if label then
+        return label
+    end
+    return (is_terminal and "Terminal-" or "Computer-") .. computer_id
+end
+
+local function setUsername()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== Setup Username ===")
+    print("Current: " .. getUsername())
+    print("")
+    print("Enter new username:")
+    
+    local new_name = read()
+    if new_name and new_name ~= "" then
+        config.username = new_name
+        saveData()
+        print("Username set to: " .. new_name)
+    else
+        print("Username unchanged.")
+    end
+    sleep(1)
+end
+
 -- Authentication functions
 local function hashPassword(password)
     local hash = 0
@@ -210,37 +241,6 @@ end
 
 local function isSecurityAuthenticated()
     return config.security_authenticated and os.time() < config.security_auth_expires
-end
-
--- Username management
-local function getUsername()
-    if config.username then
-        return config.username
-    end
-    local label = os.getComputerLabel()
-    if label then
-        return label
-    end
-    return (is_terminal and "Terminal-" or "Computer-") .. computer_id
-end
-
-local function setUsername()
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("=== Setup Username ===")
-    print("Current: " .. getUsername())
-    print("")
-    print("Enter new username:")
-    
-    local new_name = read()
-    if new_name and new_name ~= "" then
-        config.username = new_name
-        saveData()
-        print("Username set to: " .. new_name)
-    else
-        print("Username unchanged.")
-    end
-    sleep(1)
 end
 
 -- Contact management
@@ -514,16 +514,15 @@ local function drawMainScreen()
     term.setCursorPos(1, 1)
     drawHeader()
     
-    if isSecurityAuthenticated() then
-        local alarm_count = 0
-        for _ in pairs(active_alarms) do alarm_count = alarm_count + 1 end
-        
-        if alarm_count > 0 then
-            term.setTextColor(colors.red)
-            print("!!! " .. alarm_count .. " ACTIVE ALARMS !!!")
-            term.setTextColor(colors.white)
-            print("")
-        end
+    -- Count active alarms (even if not authenticated)
+    local alarm_count = 0
+    for _ in pairs(active_alarms) do alarm_count = alarm_count + 1 end
+    
+    if isSecurityAuthenticated() and alarm_count > 0 then
+        term.setTextColor(colors.red)
+        print("!!! " .. alarm_count .. " ACTIVE ALARMS !!!")
+        term.setTextColor(colors.white)
+        print("")
     end
     
     print("Main Menu:")
@@ -531,15 +530,17 @@ local function drawMainScreen()
     print("2. Contacts (" .. #contacts .. " saved)")
     print("3. Online Users")
     
-    if isSecurityAuthenticated() then
-        print("4. Emergency Alerts")
-        print("5. Settings")
-        print("6. About")
+    -- Always show Emergency Alerts, highlight if alarms active
+    if alarm_count > 0 then
+        term.setTextColor(colors.red)
+        print("4. Emergency Alerts (!)")
+        term.setTextColor(colors.white)
     else
-        print("4. Security Login")
-        print("5. Settings")
-        print("6. About")
+        print("4. Emergency Alerts")
     end
+    
+    print("5. Settings")
+    print("6. About")
     
     if is_terminal then
         print("Q. Quit")
@@ -606,17 +607,13 @@ local function drawSecurityLoginScreen()
 end
 
 local function drawEmergencyScreen()
-    if not isSecurityAuthenticated() then
-        drawSecurityLoginScreen()
-        return
-    end
-    
     term.clear()
     term.setCursorPos(1, 1)
     print("=== EMERGENCY ALERTS ===")
     print("User: " .. getUsername())
     print("")
     
+    -- Always show active alarms (even if not authenticated)
     local alarm_count = 0
     for source_id, alarm_data in pairs(active_alarms) do
         alarm_count = alarm_count + 1
@@ -635,6 +632,7 @@ local function drawEmergencyScreen()
         print("")
     end
     
+    -- Always show security nodes (even if not authenticated, but limited info)
     local node_count = 0
     for _ in pairs(security_nodes) do node_count = node_count + 1 end
     
@@ -656,7 +654,15 @@ local function drawEmergencyScreen()
         print("")
     end
     
-    if config.allow_emergency_alerts then
+    -- Authentication status and controls
+    if isSecurityAuthenticated() then
+        term.setTextColor(colors.green)
+        print("Status: AUTHENTICATED")
+        term.setTextColor(colors.white)
+        local expires_in = config.security_auth_expires - os.time()
+        print("Expires: " .. math.floor(expires_in / 60) .. " minutes")
+        print("")
+        
         print("Send Alert:")
         print("G - General Alert")
         print("E - Evacuation Alert")
@@ -664,9 +670,17 @@ local function drawEmergencyScreen()
         if alarm_count > 0 then
             print("C - Cancel All Alarms")
         end
+        print("O - Logout")
+    else
+        term.setTextColor(colors.yellow)
+        print("Status: NOT AUTHENTICATED")
+        term.setTextColor(colors.white)
+        print("Login required to send alerts")
         print("")
+        print("I - Login to Send Alerts")
     end
     
+    print("")
     print("R - Refresh | B - Back")
 end
 
@@ -676,8 +690,49 @@ local function handleEmergencyScreenInput()
     if input:lower() == "b" then
         current_screen = "main"
     elseif input:lower() == "r" then
-        return
-    elseif config.allow_emergency_alerts then
+        return -- Just refresh the screen
+    elseif input:lower() == "i" and not isSecurityAuthenticated() then
+        -- Login option
+        print("")
+        print("Enter security password:")
+        local password = read("*")
+        if password and password ~= "" then
+            print("")
+            print("Contacting server for authentication...")
+            requestServerAuthentication(password)
+            print("Waiting for server response...")
+            
+            local timeout = os.startTimer(5)
+            while true do
+                local event, param1, param2, param3 = os.pullEvent()
+                if event == "rednet_message" then
+                    local sender_id, message, protocol = param1, param2, param3
+                    if protocol == PHONE_PROTOCOL and message.type == "security_auth_response" then
+                        handleMessage(sender_id, message, protocol)
+                        if config.security_authenticated then
+                            print("Authentication successful!")
+                        else
+                            print("Authentication failed!")
+                        end
+                        break
+                    end
+                elseif event == "timer" and param1 == timeout then
+                    print("Server timeout - authentication failed")
+                    break
+                end
+            end
+            sleep(2)
+        end
+    elseif input:lower() == "o" and isSecurityAuthenticated() then
+        -- Logout option
+        config.security_authenticated = false
+        config.allow_emergency_alerts = false
+        saveData()
+        print("")
+        print("Logged out of security features")
+        sleep(1)
+    elseif isSecurityAuthenticated() and config.allow_emergency_alerts then
+        -- Alert sending options (only if authenticated)
         if input:lower() == "g" then
             local success, message = sendSecurityAlert("general")
             print("")
@@ -753,11 +808,7 @@ local function handleMainScreenInput()
         current_screen = "online_users"
         requestUserList()
     elseif input == "4" then
-        if isSecurityAuthenticated() then
-            current_screen = "emergency"
-        else
-            current_screen = "security_login"
-        end
+        current_screen = "emergency"  -- Always go to emergency screen
     elseif input == "5" then
         current_screen = "settings"
     elseif input == "6" then
@@ -823,7 +874,8 @@ local function main()
     
     loadData()
     
-    if not config.username then
+    -- Only setup username if it's actually not configured
+    if not config.username or config.username == "" then
         setUsername()
     end
     
