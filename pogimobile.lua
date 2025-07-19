@@ -407,19 +407,34 @@ local function processBackgroundMessages()
         end
         
     elseif protocol == SECURITY_PROTOCOL then
+        addDebugLog("SECURITY: Processing " .. (message.type or "unknown") .. " action=" .. (message.action or "none"))
+        addDebugLog("SECURITY: From " .. sender_id .. " original=" .. (message.original_sender or "none"))
+        
         -- Skip our own messages
-        if message.original_sender == computer_id or (sender_id == computer_id and not message.relayed_by_server) then
+        if message.original_sender == computer_id then
+            addDebugLog("SECURITY: Skipping - originally from us")
+            return
+        end
+        
+        if sender_id == computer_id and not message.relayed_by_server then
+            addDebugLog("SECURITY: Skipping - direct loop from ourselves")
             return
         end
         
         if message.type == "security_alert" then
+            addDebugLog("SECURITY: Processing security_alert action=" .. (message.action or "unknown"))
+            
             if message.action == "start" then
                 local source_id = message.source_id or message.original_sender or sender_id
+                addDebugLog("SECURITY: Adding alarm from " .. source_id)
+                
                 active_alarms[source_id] = {
                     type = message.alarm_type or "general",
                     source_name = message.source_name or ("Node-" .. source_id),
                     start_time = message.timestamp or os.time()
                 }
+                
+                addDebugLog("SECURITY: Alarm added - type=" .. (message.alarm_type or "general"))
                 
                 if config.notification_sound and speaker then
                     speaker.playNote("pling", 3.0, 12)
@@ -437,15 +452,20 @@ local function processBackgroundMessages()
                 end
                 
             elseif message.action == "stop" then
+                addDebugLog("SECURITY: Processing stop/cancel")
                 if message.global_cancel then
+                    addDebugLog("SECURITY: Global cancel - clearing all alarms")
                     active_alarms = {}
                 else
                     local source_id = message.source_id or message.original_sender or sender_id
+                    addDebugLog("SECURITY: Clearing alarm from " .. source_id)
                     active_alarms[source_id] = nil
                 end
             end
             
         elseif message.type == "security_heartbeat" then
+            addDebugLog("SECURITY: Processing heartbeat from " .. (message.computer_id or "unknown"))
+            
             security_nodes[message.computer_id] = {
                 device_name = message.device_name or ("Node-" .. message.computer_id),
                 device_type = message.device_type or "computer",
@@ -455,6 +475,7 @@ local function processBackgroundMessages()
             }
             
             if message.alarm_active then
+                addDebugLog("SECURITY: Heartbeat shows alarm active - adding alarm")
                 active_alarms[message.computer_id] = {
                     type = message.alarm_type or "general",
                     source_name = message.device_name or ("Node-" .. message.computer_id),
