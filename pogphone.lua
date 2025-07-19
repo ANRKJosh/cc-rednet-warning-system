@@ -77,7 +77,6 @@ local function loadData()
                         config[key] = value
                     end
                 end
-                -- Store load result for debug viewing
                 addDebugLog("Config loaded OK, user=" .. tostring(config.username))
             else
                 addDebugLog("Config parse failed")
