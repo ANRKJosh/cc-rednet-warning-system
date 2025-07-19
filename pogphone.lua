@@ -195,17 +195,18 @@ local function setUsername()
     print("=== Setup Username ===")
     print("Current: " .. getUsername())
     print("")
-    print("Enter new username:")
+    print("Enter new username (or press Enter to keep current):")
     
     local new_name = read()
     if new_name and new_name ~= "" then
         config.username = new_name
         saveData()
         print("Username set to: " .. new_name)
+        sleep(1)
     else
         print("Username unchanged.")
+        sleep(1)
     end
-    sleep(1)
 end
 
 -- Authentication functions
@@ -226,6 +227,7 @@ local function requestServerAuthentication(password)
         timestamp = os.time()
     }
     rednet.broadcast(message, PHONE_PROTOCOL)
+    print("DEBUG: Auth request sent, hash: " .. message.password_hash)
     return true
 end
 
@@ -320,7 +322,17 @@ local function sendSecurityAlert(alarm_type)
         authenticated_user = true
     }
     
+    print("DEBUG: Sending security alert: " .. alarm_type .. " from " .. computer_id)
     rednet.broadcast(message, SECURITY_PROTOCOL)
+    
+    -- Also add the alarm to our own active alarms immediately
+    active_alarms[computer_id] = {
+        type = alarm_type,
+        source_name = getUsername(),
+        start_time = os.time()
+    }
+    print("DEBUG: Added alarm to local active_alarms")
+    
     return true, "Alert sent"
 end
 
@@ -412,15 +424,18 @@ local function handleMessage(sender_id, message, protocol)
             end
             
         elseif message.type == "security_auth_response" then
+            print("DEBUG: Auth response received, authenticated: " .. tostring(message.authenticated))
             if message.authenticated then
                 config.security_authenticated = true
                 config.security_auth_expires = message.expires or (os.time() + 3600)
                 config.allow_emergency_alerts = true
                 saveData()
+                -- Don't print here, let the calling function handle it
             else
                 config.security_authenticated = false
                 config.allow_emergency_alerts = false
                 saveData()
+                -- Don't print here, let the calling function handle it
             end
             
         elseif message.type == "modem_detection_response" then
@@ -446,14 +461,18 @@ local function handleMessage(sender_id, message, protocol)
         end
         
     elseif protocol == SECURITY_PROTOCOL then
+        print("DEBUG: Security message received, type: " .. (message.type or "unknown"))
         if isSecurityAuthenticated() then
+            print("DEBUG: User is authenticated, processing security message")
             if message.type == "security_alert" then
+                print("DEBUG: Processing security alert, action: " .. (message.action or "unknown"))
                 if message.action == "start" then
                     active_alarms[message.source_id] = {
                         type = message.alarm_type or "general",
                         source_name = message.source_name or ("Node-" .. message.source_id),
                         start_time = message.timestamp or os.time()
                     }
+                    print("DEBUG: Alarm added for source " .. message.source_id)
                     
                     if config.notification_sound and speaker then
                         speaker.playNote("pling", 3.0, 12)
@@ -472,6 +491,7 @@ local function handleMessage(sender_id, message, protocol)
                     
                 elseif message.action == "stop" then
                     active_alarms[message.source_id] = nil
+                    print("DEBUG: Alarm removed for source " .. message.source_id)
                 end
                 
             elseif message.type == "security_heartbeat" then
@@ -489,10 +509,13 @@ local function handleMessage(sender_id, message, protocol)
                         source_name = message.device_name or ("Node-" .. message.computer_id),
                         start_time = message.alarm_start_time or os.time()
                     }
+                    print("DEBUG: Alarm added from heartbeat for " .. message.computer_id)
                 else
                     active_alarms[message.computer_id] = nil
                 end
             end
+        else
+            print("DEBUG: User not authenticated, ignoring security message")
         end
     end
 end
@@ -613,19 +636,25 @@ local function drawEmergencyScreen()
     print("User: " .. getUsername())
     print("")
     
-    -- Always show active alarms (even if not authenticated)
+    -- Debug: Show active alarms count
     local alarm_count = 0
     for source_id, alarm_data in pairs(active_alarms) do
         alarm_count = alarm_count + 1
-        term.setTextColor(colors.red)
-        print("ACTIVE: " .. string.upper(alarm_data.type))
-        term.setTextColor(colors.white)
-        print("  From: " .. alarm_data.source_name)
-        print("  Time: " .. textutils.formatTime(alarm_data.start_time, true))
-        print("")
     end
+    print("DEBUG: Active alarms count: " .. alarm_count)
     
-    if alarm_count == 0 then
+    -- Always show active alarms (even if not authenticated)
+    if alarm_count > 0 then
+        for source_id, alarm_data in pairs(active_alarms) do
+            term.setTextColor(colors.red)
+            print("ACTIVE: " .. string.upper(alarm_data.type))
+            term.setTextColor(colors.white)
+            print("  From: " .. alarm_data.source_name)
+            print("  Time: " .. textutils.formatTime(alarm_data.start_time, true))
+            print("  Source ID: " .. source_id)
+            print("")
+        end
+    else
         term.setTextColor(colors.green)
         print("All Clear - No Active Alarms")
         term.setTextColor(colors.white)
@@ -699,28 +728,35 @@ local function handleEmergencyScreenInput()
         if password and password ~= "" then
             print("")
             print("Contacting server for authentication...")
+            
+            -- Store initial auth state
+            local initial_auth_state = config.security_authenticated
+            
             requestServerAuthentication(password)
             print("Waiting for server response...")
             
-            local timeout = os.startTimer(5)
-            while true do
-                local event, param1, param2, param3 = os.pullEvent()
-                if event == "rednet_message" then
-                    local sender_id, message, protocol = param1, param2, param3
-                    if protocol == PHONE_PROTOCOL and message.type == "security_auth_response" then
-                        handleMessage(sender_id, message, protocol)
-                        if config.security_authenticated then
-                            print("Authentication successful!")
-                        else
-                            print("Authentication failed!")
-                        end
-                        break
+            -- Wait for authentication to change or timeout
+            local start_time = os.time()
+            local timeout_seconds = 10
+            local auth_changed = false
+            
+            while (os.time() - start_time) < timeout_seconds and not auth_changed do
+                sleep(0.5)  -- Check every half second
+                if config.security_authenticated ~= initial_auth_state then
+                    auth_changed = true
+                    if config.security_authenticated then
+                        print("Authentication successful!")
+                    else
+                        print("Authentication failed - incorrect password!")
                     end
-                elseif event == "timer" and param1 == timeout then
-                    print("Server timeout - authentication failed")
-                    break
                 end
             end
+            
+            if not auth_changed then
+                print("Server timeout - no response received")
+                print("Check server connection and try again")
+            end
+            
             sleep(2)
         end
     elseif input:lower() == "o" and isSecurityAuthenticated() then
@@ -874,8 +910,13 @@ local function main()
     
     loadData()
     
-    -- Only setup username if it's actually not configured
-    if not config.username or config.username == "" then
+    -- Check if we have a proper username (not just the default)
+    local current_username = getUsername()
+    local is_default_name = string.find(current_username, "Terminal%-") or string.find(current_username, "Computer%-")
+    
+    -- Only prompt for username if we don't have a custom one set
+    if not config.username or config.username == "" or (is_default_name and not config.username) then
+        print("First time setup or no custom username detected.")
         setUsername()
     end
     
@@ -910,11 +951,7 @@ local function main()
             end
         elseif current_screen == "emergency" then
             drawEmergencyScreen()
-            if isSecurityAuthenticated() then
-                handleEmergencyScreenInput()
-            else
-                current_screen = "security_login"
-            end
+            handleEmergencyScreenInput()
         elseif current_screen == "settings" then
             drawSettingsScreen()
             local input = read()
