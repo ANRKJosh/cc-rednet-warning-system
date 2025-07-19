@@ -75,9 +75,13 @@ debug_log = debug_log or {}
 
 local function addDebugLog(message)
     if not debug_log then debug_log = {} end
-    table.insert(debug_log, textutils.formatTime(os.time(), true) .. " " .. message)
-    if #debug_log > 10 then
-        table.remove(debug_log, 1)
+    
+    -- Limit debug log size and reduce spam from heartbeats
+    if not string.find(message, "HB:") or auth_request_pending then
+        table.insert(debug_log, textutils.formatTime(os.time(), true) .. " " .. message)
+        if #debug_log > 5 then  -- Keep only last 5 entries
+            table.remove(debug_log, 1)
+        end
     end
 end
 
@@ -452,6 +456,11 @@ end
 -- Message processing
 local function handleMessage(sender_id, message, protocol)
     if protocol == PHONE_PROTOCOL then
+        -- Add debug for all phone protocol messages when auth is pending
+        if auth_request_pending and message.type then
+            addDebugLog("PHONE: Received " .. message.type .. " from " .. sender_id)
+        end
+        
         if message.type == "user_presence" then
             online_users[message.user_id] = {
                 username = message.username,
@@ -693,12 +702,16 @@ local function drawSecurityLoginScreen()
         print("")
         print("Please wait or press B to cancel...")
         
-        -- Show debug info
+        -- Limit debug info to just what's needed
         print("")
-        print("Debug:")
-        print("  Auth pending: " .. tostring(auth_request_pending))
-        print("  Auth result: " .. tostring(auth_last_result))
-        print("  Is authenticated: " .. tostring(isSecurityAuthenticated()))
+        print("Debug: Waiting for server response...")
+        if debug_log and #debug_log > 0 then
+            -- Only show the last 2 debug entries to avoid clutter
+            local start_idx = math.max(1, #debug_log - 1)
+            for i = start_idx, #debug_log do
+                print("  " .. debug_log[i])
+            end
+        end
     elseif auth_last_result then
         -- Show result of last attempt
         if auth_last_result == "success" then
@@ -1108,13 +1121,27 @@ local function main()
         elseif current_screen == "security_login" then
             drawSecurityLoginScreen()
             
-            -- Handle input for security login screen
+            -- Always handle input, even when auth is pending
             if auth_request_pending then
-                -- Don't block - let the main loop continue to process messages
-                -- The screen will auto-refresh on next iteration
+                -- Check for timeout first
+                local elapsed = os.clock() - auth_request_start_time
+                if elapsed > 10 then
+                    auth_request_pending = false
+                    auth_last_result = "timeout"
+                    addDebugLog("AUTH: Timeout after " .. math.floor(elapsed) .. " seconds")
+                else
+                    -- Allow cancellation while waiting
+                    local event, key = os.pullEventRaw("key")
+                    if key == keys.b then
+                        auth_request_pending = false
+                        addDebugLog("AUTH: Cancelled by user")
+                        current_screen = "main"
+                    end
+                end
             elseif auth_last_result then
                 -- Wait for any key when showing result
                 os.pullEvent("key")
+                current_screen = "main"  -- Go back to main after showing result
             else
                 local input = read()
                 if input:lower() == "b" then
@@ -1240,22 +1267,12 @@ local function main()
                         broadcastPresence()
                         presence_timer = os.startTimer(30)
                     elseif event == "timer" and param1 == refresh_timer then
-                        -- Refresh more frequently when auth is pending
-                        if auth_request_pending then
-                            refresh_timer = os.startTimer(0.5)  -- Faster refresh when waiting
-                        else
-                            refresh_timer = os.startTimer(2)    -- Normal refresh
-                        end
+                        refresh_timer = os.startTimer(1)  -- Standard 1 second refresh
                     end
                 end
             end,
             function()
-                -- Short sleep to allow screen updates when auth state changes
-                if auth_request_pending then
-                    sleep(0.2)  -- Quick cycle when waiting for auth
-                else
-                    sleep(1)    -- Normal cycle
-                end
+                sleep(0.1)  -- Keep this short to ensure responsiveness
             end
         )
     end
