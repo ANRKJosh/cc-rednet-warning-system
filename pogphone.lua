@@ -258,15 +258,21 @@ local function hashPassword(password)
 end
 
 local function requestServerAuthentication(password)
+    addDebugLog("AUTH: Function called with password length " .. #password)
+    
+    local hash = hashPassword(password)
+    addDebugLog("AUTH: Generated hash " .. hash)
+    
     local message = {
         type = "security_auth_request",
-        password_hash = hashPassword(password),
+        password_hash = hash,
         user_id = computer_id,
         username = getUsername(),
         timestamp = os.time()
     }
     
-    addDebugLog("AUTH: Sending request for user " .. computer_id .. " with hash " .. hashPassword(password))
+    addDebugLog("AUTH: Message constructed - type=" .. message.type .. " user=" .. message.user_id)
+    addDebugLog("AUTH: About to broadcast on protocol '" .. PHONE_PROTOCOL .. "'")
     
     -- Test the broadcast with error handling
     local success, error_msg = pcall(function()
@@ -283,6 +289,8 @@ local function requestServerAuthentication(password)
     auth_request_pending = true
     auth_request_start_time = os.clock()  -- Use os.clock() for elapsed time
     auth_last_result = nil
+    
+    addDebugLog("AUTH: Request complete, pending=" .. tostring(auth_request_pending))
     
     return true
 end
@@ -519,9 +527,15 @@ end
 
 -- Message processing
 local function handleMessage(sender_id, message, protocol)
-    -- Debug: Log ALL messages with full details
+    -- Debug: Log ALL messages with full details when auth is pending
     if auth_request_pending then
         addDebugLog("MSG: " .. protocol .. "/" .. (message.type or "?") .. " from " .. sender_id)
+        
+        -- Log the entire message structure for auth-related messages
+        if message.type == "security_auth_response" or message.type == "auth_test" then
+            addDebugLog("FULL_MSG: " .. textutils.serialize(message))
+        end
+        
         -- Also log if it's the right protocol
         if protocol == PHONE_PROTOCOL then
             addDebugLog("PHONE_PROTO: Correct protocol match")
@@ -852,9 +866,13 @@ local function drawSecurityLoginScreen()
         
         local password = read("*")
         if password and password ~= "" then
+            addDebugLog("LOGIN: Password entered, length=" .. #password)
+            addDebugLog("LOGIN: Calling requestServerAuthentication")
             requestServerAuthentication(password)
+            addDebugLog("LOGIN: requestServerAuthentication returned")
             -- Don't wait here - just return and let the main loop handle it
         else
+            addDebugLog("LOGIN: No password entered")
             print("")
             print("B - Back")
         end
@@ -991,11 +1009,16 @@ local function handleEmergencyScreenInput()
         print("Enter security password:")
         local password = read("*")
         if password and password ~= "" then
+            addDebugLog("EMERGENCY: Password entered, length=" .. #password)
+            addDebugLog("EMERGENCY: Calling requestServerAuthentication")
             requestServerAuthentication(password)
+            addDebugLog("EMERGENCY: requestServerAuthentication returned")
             print("")
             print("Authentication request sent...")
             print("Check status in Emergency Alerts menu")
             sleep(2)
+        else
+            addDebugLog("EMERGENCY: No password entered")
         end
     elseif input:lower() == "o" and isSecurityAuthenticated() then
         -- Logout option
@@ -1384,8 +1407,18 @@ local function main()
                     
                     if event == "rednet_message" then
                         local sender_id, message, protocol = param1, param2, param3
+                        
+                        -- Debug: Log all rednet events when auth is pending
+                        if auth_request_pending then
+                            addDebugLog("REDNET_EVENT: " .. protocol .. " from " .. sender_id)
+                        end
+                        
                         if protocol == PHONE_PROTOCOL or protocol == SECURITY_PROTOCOL then
                             handleMessage(sender_id, message, protocol)
+                        else
+                            if auth_request_pending then
+                                addDebugLog("UNKNOWN_PROTO: " .. protocol .. " from " .. sender_id)
+                            end
                         end
                     elseif event == "timer" and param1 == presence_timer then
                         broadcastPresence()
