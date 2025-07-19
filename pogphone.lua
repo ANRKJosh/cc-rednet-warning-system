@@ -83,16 +83,20 @@ local function loadData()
         if file then
             local content = file.readAll()
             file.close()
+            addDebugLog("Raw config: " .. string.sub(content, 1, 50) .. "...")
+            
             local success, data = pcall(textutils.unserialize, content)
             if success and data then
+                addDebugLog("Config parsed, username in data = " .. tostring(data.username))
                 for key, value in pairs(data) do
                     if config[key] ~= nil then
+                        addDebugLog("Setting config." .. key .. " = " .. tostring(value))
                         config[key] = value
                     end
                 end
-                addDebugLog("Config loaded OK, user=" .. tostring(config.username))
+                addDebugLog("Config loaded OK, final user=" .. tostring(config.username))
             else
-                addDebugLog("Config parse failed")
+                addDebugLog("Config parse failed: " .. tostring(data))
             end
         else
             addDebugLog("Config file open failed")
@@ -135,14 +139,25 @@ local function loadData()
 end
 
 local function saveData()
+    -- Debug: Show what we're about to save
+    addDebugLog("Saving config.username = " .. tostring(config.username))
+    
     -- Save config first
     local file = fs.open(CONFIG_FILE, "w")
     if file then
-        file.write(textutils.serialize(config))
+        local serialized = textutils.serialize(config)
+        file.write(serialized)
         file.close()
-        addDebugLog("Config saved, user=" .. tostring(config.username))
+        addDebugLog("Config saved successfully")
+        -- Debug: Read it back immediately to verify
+        local verify_file = fs.open(CONFIG_FILE, "r")
+        if verify_file then
+            local content = verify_file.readAll()
+            verify_file.close()
+            addDebugLog("Verify save: " .. string.sub(content, 1, 50) .. "...")
+        end
     else
-        addDebugLog("Config save failed")
+        addDebugLog("Config save failed - file open error")
     end
     
     -- Save contacts
@@ -224,6 +239,7 @@ local function setUsername()
     local new_name = read()
     if new_name and new_name ~= "" then
         config.username = new_name
+        addDebugLog("Set username to: " .. new_name)
         saveData()
         print("Username set to: " .. new_name)
         sleep(1)
@@ -231,6 +247,7 @@ local function setUsername()
         -- Save the current username if not already saved
         if not config.username then
             config.username = current
+            addDebugLog("Saved current username: " .. current)
             saveData()
             print("Username saved as: " .. current)
         else
@@ -1156,6 +1173,7 @@ local function main()
                     
                     if event == "rednet_message" then
                         local sender_id, message, protocol = param1, param2, param3
+                        addDebugLog("REDNET: " .. protocol .. " from " .. sender_id)
                         if protocol == PHONE_PROTOCOL or protocol == SECURITY_PROTOCOL then
                             handleMessage(sender_id, message, protocol)
                         end
