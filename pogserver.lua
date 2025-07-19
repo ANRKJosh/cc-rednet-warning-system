@@ -310,6 +310,7 @@ local function isUserAuthenticated(user_id)
     return false
 end
 
+-- FIXED: Authentication response function using broadcast instead of direct send
 local function sendPasswordResponse(user_id, password_attempt)
     if not config.allow_password_requests then
         return
@@ -321,17 +322,19 @@ local function sendPasswordResponse(user_id, password_attempt)
         type = "security_auth_response",
         authenticated = is_correct,
         expires = is_correct and (os.time() + 3600) or nil,
-        server_name = config.server_name
+        server_name = config.server_name,
+        target_user_id = user_id  -- Add this so only the right client processes it
     }
     
     local success, error_msg = pcall(function()
-        rednet.send(user_id, response, PHONE_PROTOCOL)
+        -- FIXED: Change from rednet.send to rednet.broadcast for better reliability
+        rednet.broadcast(response, PHONE_PROTOCOL)
     end)
     
     if success then
-        log("Password verification " .. (is_correct and "SUCCESS" or "FAILED") .. " for user " .. user_id)
+        log("Password verification " .. (is_correct and "SUCCESS" or "FAILED") .. " for user " .. user_id .. " (broadcast)")
     else
-        log("Failed to send password response to " .. user_id .. ": " .. tostring(error_msg), "ERROR")
+        log("Failed to broadcast password response for " .. user_id .. ": " .. tostring(error_msg), "ERROR")
         server_stats.network_errors = server_stats.network_errors + 1
     end
 end
