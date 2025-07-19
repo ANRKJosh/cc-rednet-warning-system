@@ -21,18 +21,24 @@ local config = {
     security_monitoring = true,
     heartbeat_interval = 30,
     user_timeout = 300,  -- 5 minutes before marking user offline
+    -- Security password management
+    security_password = "poggishtown2025",  -- Master security password
+    allow_password_requests = true,        -- Allow devices to request password verification
+    -- Remote configuration
+    allow_remote_config = true,            -- Allow pushing config to devices
+    modem_detection_override = {},         -- Per-device modem type overrides
     apps = {
         ["poggishtown-security"] = {
             name = "PoggishTown Security",
             version = "2.0",
-            url = "https://raw.githubusercontent.com/your-repo/poggishtown-security.lua",
+            url = "https://raw.githubusercontent.com/ANRKJosh/cc-rednet-warning-system/refs/heads/main/pogalert",
             description = "Password-protected alarm system",
             compatible_devices = {"computer", "terminal"}
         },
         ["poggishtown-phone"] = {
             name = "PoggishTown Phone", 
             version = "2.0",
-            url = "https://raw.githubusercontent.com/your-repo/poggishtown-phone.lua",
+            url = "https://raw.githubusercontent.com/ANRKJosh/cc-rednet-warning-system/refs/heads/main/pogphone.lua",
             description = "Modern messaging and communication",
             compatible_devices = {"terminal", "computer"}
         }
@@ -47,11 +53,14 @@ local server_start_time = os.time()
 local connected_users = {}  -- Currently online users
 local stored_messages = {}  -- Messages for offline users
 local security_nodes = {}   -- Security system nodes
+local authenticated_users = {}  -- Users authenticated for security features
 local server_stats = {
     messages_relayed = 0,
     users_served = 0,
     uptime_start = os.time(),
-    security_alerts = 0
+    security_alerts = 0,
+    password_requests = 0,
+    config_pushes = 0
 }
 
 -- Logging system
@@ -204,6 +213,103 @@ local function initializeModem()
     return false
 end
 
+-- Security and authentication functions
+local function hashPassword(password)
+    local hash = 0
+    for i = 1, #password do
+        hash = (hash * 31 + string.byte(password, i)) % 1000000
+    end
+    return tostring(hash)
+end
+
+local function authenticateUser(user_id, password_hash)
+    if hashPassword(config.security_password) == password_hash then
+        authenticated_users[user_id] = {
+            authenticated_time = os.time(),
+            expires = os.time() + 3600  -- 1 hour authentication
+        }
+        server_stats.password_requests = server_stats.password_requests + 1
+        log("User " .. user_id .. " authenticated for security features")
+        return true
+    end
+    return false
+end
+
+local function isUserAuthenticated(user_id)
+    local auth = authenticated_users[user_id]
+    if auth and os.time() < auth.expires then
+        return true
+    end
+    authenticated_users[user_id] = nil  -- Clean up expired auth
+    return false
+end
+
+local function sendPasswordResponse(user_id, password_attempt)
+    if not config.allow_password_requests then
+        return
+    end
+    
+    local is_correct = authenticateUser(user_id, password_attempt)
+    
+    local response = {
+        type = "security_auth_response",
+        authenticated = is_correct,
+        expires = is_correct and (os.time() + 3600) or nil,
+        server_name = config.server_name
+    }
+    
+    rednet.send(user_id, response, PHONE_PROTOCOL)
+    log("Password verification " .. (is_correct and "SUCCESS" or "FAILED") .. " for user " .. user_id)
+end
+
+-- Remote configuration functions
+local function sendConfigUpdate(user_id, config_data)
+    if not config.allow_remote_config then
+        return false
+    end
+    
+    local message = {
+        type = "config_update",
+        config_data = config_data,
+        server_name = config.server_name,
+        timestamp = os.time()
+    }
+    
+    rednet.send(user_id, message, PHONE_PROTOCOL)
+    server_stats.config_pushes = server_stats.config_pushes + 1
+    log("Config update sent to user " .. user_id)
+    return true
+end
+
+local function broadcastConfigUpdate(config_data)
+    if not config.allow_remote_config then
+        return 0
+    end
+    
+    local count = 0
+    for user_id, _ in pairs(connected_users) do
+        if sendConfigUpdate(user_id, config_data) then
+            count = count + 1
+        end
+    end
+    
+    log("Config update broadcast to " .. count .. " users")
+    return count
+end
+
+local function setModemOverride(user_id, modem_type)
+    config.modem_detection_override[user_id] = modem_type
+    saveData()
+    
+    -- Send config update to specific user
+    local config_data = {
+        modem_type_override = modem_type,
+        force_ender_modem = (modem_type == "ender")
+    }
+    
+    sendConfigUpdate(user_id, config_data)
+    log("Modem override set for user " .. user_id .. ": " .. modem_type)
+end
 -- User management
 local function updateUserPresence(user_id, username, device_type)
     connected_users[user_id] = {
@@ -426,6 +532,23 @@ local function handleMessage(sender_id, message, protocol)
             
         elseif message.type == "user_list_request" then
             sendUserList(sender_id)
+            
+        elseif message.type == "security_auth_request" then
+            -- Handle password verification requests
+            if message.password_hash then
+                sendPasswordResponse(sender_id, message.password_hash)
+            end
+            
+        elseif message.type == "modem_detection_request" then
+            -- Handle modem type detection requests
+            local override = config.modem_detection_override[sender_id]
+            local response = {
+                type = "modem_detection_response",
+                recommended_type = override or "auto",
+                force_ender = override == "ender",
+                server_recommendation = config.require_ender_modem and "ender" or "wireless"
+            }
+            rednet.send(sender_id, response, PHONE_PROTOCOL)
             
         else
             -- Handle app repository requests
@@ -656,6 +779,10 @@ local function configureServer()
     print("5. Require Ender Modem: " .. (config.require_ender_modem and "YES" or "NO"))
     print("6. Message Retention: " .. config.message_retention_days .. " days")
     print("7. Max Stored Messages: " .. config.max_stored_messages)
+    print("8. Security Password: " .. string.rep("*", #config.security_password))
+    print("9. Remote Config: " .. (config.allow_remote_config and "ENABLED" or "DISABLED"))
+    print("10. Set User Modem Override")
+    print("11. Broadcast Config Update")
     print("")
     print("Enter option number to change, or 'B' to go back:")
     
@@ -701,10 +828,60 @@ local function configureServer()
             saveData()
             print("Max stored messages updated!")
         end
+    elseif input == "8" then
+        print("Enter new security password:")
+        local new_pass = read("*")
+        if new_pass and new_pass ~= "" then
+            config.security_password = new_pass
+            saveData()
+            print("Security password updated!")
+            print("Note: Devices will need to re-authenticate")
+        end
+    elseif input == "9" then
+        config.allow_remote_config = not config.allow_remote_config
+        saveData()
+        print("Remote configuration " .. (config.allow_remote_config and "enabled" or "disabled"))
+    elseif input == "10" then
+        print("Connected users:")
+        local user_list = {}
+        for user_id, user_data in pairs(connected_users) do
+            table.insert(user_list, {id = user_id, data = user_data})
+        end
+        
+        if #user_list == 0 then
+            print("No users online")
+        else
+            for i, user in ipairs(user_list) do
+                local override = config.modem_detection_override[user.id] or "auto"
+                print(i .. ". " .. user.data.username .. " (ID:" .. user.id .. ") - Override: " .. override)
+            end
+            
+            print("")
+            print("Enter user number:")
+            local user_num = tonumber(read())
+            if user_num and user_num >= 1 and user_num <= #user_list then
+                print("Modem type (ender/wireless/auto):")
+                local modem_type = read()
+                if modem_type and (modem_type == "ender" or modem_type == "wireless" or modem_type == "auto") then
+                    setModemOverride(user_list[user_num].id, modem_type)
+                    print("Modem override set!")
+                end
+            end
+        end
+    elseif input == "11" then
+        print("Broadcast config update to all users? (y/n)")
+        local confirm = read()
+        if confirm:lower() == "y" then
+            local count = broadcastConfigUpdate({
+                server_name = config.server_name,
+                require_ender_modem = config.require_ender_modem
+            })
+            print("Config update sent to " .. count .. " users!")
+        end
     end
     
     if input ~= "b" and input ~= "B" then
-        sleep(1)
+        sleep(2)
     end
 end
 
