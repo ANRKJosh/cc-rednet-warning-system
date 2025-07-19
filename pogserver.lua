@@ -321,50 +321,40 @@ local function sendPasswordResponse(user_id, password_attempt)
     
     local is_correct = authenticateUser(user_id, password_attempt)
     
-    -- Try a simpler response structure first
+    -- Use the same simple structure as working server announcements
     local response = {
         type = "security_auth_response",
         authenticated = is_correct,
         target_user_id = user_id,
-        server_name = config.server_name
+        server_name = config.server_name,
+        server_id = computer_id,  -- Add server ID like in announcements
+        timestamp = os.time()     -- Add timestamp like in announcements
     }
     
-    -- Only add expires if authenticated to avoid potential serialization issues
+    -- Only add expires if authenticated
     if is_correct then
         response.expires = os.time() + 3600
     end
     
     log("Preparing auth response: authenticated=" .. tostring(is_correct) .. " target=" .. user_id, "DEBUG")
     
-    -- First, try sending a test message with the same structure as server announcements
-    local test_response = {
-        type = "auth_test",
-        target_user_id = user_id,
-        authenticated = is_correct,
-        server_name = config.server_name
-    }
-    
-    local test_success, test_error = pcall(function()
-        rednet.broadcast(test_response, PHONE_PROTOCOL)
-    end)
-    
-    if test_success then
-        log("Test auth message broadcast successful", "DEBUG")
-    else
-        log("Test auth message broadcast failed: " .. tostring(test_error), "ERROR")
+    -- Send multiple times to ensure delivery (like announcements)
+    for i = 1, 3 do
+        local success, error_msg = pcall(function()
+            rednet.broadcast(response, PHONE_PROTOCOL)
+        end)
+        
+        if success then
+            log("Auth response broadcast " .. i .. "/3 successful for user " .. user_id, "DEBUG")
+        else
+            log("Auth response broadcast " .. i .. "/3 failed for user " .. user_id .. ": " .. tostring(error_msg), "ERROR")
+            server_stats.network_errors = server_stats.network_errors + 1
+        end
+        
+        sleep(0.1)  -- Small delay between broadcasts
     end
     
-    -- Now try the real response
-    local success, error_msg = pcall(function()
-        rednet.broadcast(response, PHONE_PROTOCOL)
-    end)
-    
-    if success then
-        log("Password verification " .. (is_correct and "SUCCESS" or "FAILED") .. " for user " .. user_id .. " (broadcast sent)", "INFO")
-    else
-        log("Failed to broadcast password response for " .. user_id .. ": " .. tostring(error_msg), "ERROR")
-        server_stats.network_errors = server_stats.network_errors + 1
-    end
+    log("Password verification " .. (is_correct and "SUCCESS" or "FAILED") .. " for user " .. user_id .. " (3 broadcasts sent)", "INFO")
 end
 
 -- Enhanced cleanup function for performance
