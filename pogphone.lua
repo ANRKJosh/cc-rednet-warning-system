@@ -62,6 +62,11 @@ local selected_contact = nil
 local security_nodes = {}
 local active_alarms = {}
 
+-- Authentication state
+local auth_request_pending = false
+local auth_request_start_time = 0
+local auth_last_result = nil
+
 -- Debug logging
 debug_log = debug_log or {}
 
@@ -257,6 +262,12 @@ local function requestServerAuthentication(password)
         timestamp = os.time()
     }
     rednet.broadcast(message, PHONE_PROTOCOL)
+    
+    -- Set pending state
+    auth_request_pending = true
+    auth_request_start_time = os.time()
+    auth_last_result = nil
+    
     return true
 end
 
@@ -463,14 +474,19 @@ local function handleMessage(sender_id, message, protocol)
             end
             
         elseif message.type == "security_auth_response" then
+            -- Clear pending auth request
+            auth_request_pending = false
+            
             if message.authenticated then
                 config.security_authenticated = true
                 config.security_auth_expires = message.expires or (os.time() + 3600)
                 config.allow_emergency_alerts = true
+                auth_last_result = "success"
                 saveData()
             else
                 config.security_authenticated = false
                 config.allow_emergency_alerts = false
+                auth_last_result = "failed"
                 saveData()
             end
             
@@ -648,6 +664,51 @@ local function drawSecurityLoginScreen()
         print("Emergency alerts are enabled.")
         print("")
         print("L - Logout | B - Back")
+    elseif auth_request_pending then
+        -- Show waiting state
+        term.setTextColor(colors.yellow)
+        print("Status: AUTHENTICATING...")
+        term.setTextColor(colors.white)
+        print("")
+        print("Contacting server for authentication...")
+        local elapsed = os.time() - auth_request_start_time
+        print("Elapsed: " .. elapsed .. " seconds")
+        
+        -- Check for timeout
+        if elapsed > 10 then
+            auth_request_pending = false
+            auth_last_result = "timeout"
+        end
+        
+        print("")
+        print("Please wait or press B to cancel...")
+    elseif auth_last_result then
+        -- Show result of last attempt
+        if auth_last_result == "success" then
+            term.setTextColor(colors.green)
+            print("Authentication successful!")
+            term.setTextColor(colors.white)
+            print("")
+            print("Press any key to continue...")
+            auth_last_result = nil  -- Clear result
+        elseif auth_last_result == "failed" then
+            term.setTextColor(colors.red)
+            print("Authentication failed!")
+            term.setTextColor(colors.white)
+            print("Incorrect password.")
+            print("")
+            print("Press any key to try again...")
+            auth_last_result = nil  -- Clear result
+        elseif auth_last_result == "timeout" then
+            term.setTextColor(colors.red)
+            print("Authentication timeout!")
+            term.setTextColor(colors.white)
+            print("No response from server.")
+            print("Check server connection and try again.")
+            print("")
+            print("Press any key to continue...")
+            auth_last_result = nil  -- Clear result
+        end
     else
         term.setTextColor(colors.red)
         print("Status: NOT AUTHENTICATED")
@@ -660,38 +721,8 @@ local function drawSecurityLoginScreen()
         
         local password = read("*")
         if password and password ~= "" then
-            print("")
-            print("Contacting server for authentication...")
-            
-            -- Store initial auth state
-            local initial_auth_state = config.security_authenticated
-            
             requestServerAuthentication(password)
-            print("Waiting for server response...")
-            
-            -- Wait for authentication to change or timeout
-            local start_time = os.time()
-            local timeout_seconds = 10
-            local auth_changed = false
-            
-            while (os.time() - start_time) < timeout_seconds and not auth_changed do
-                sleep(0.5)  -- Check every half second
-                if config.security_authenticated ~= initial_auth_state then
-                    auth_changed = true
-                    if config.security_authenticated then
-                        print("Authentication successful!")
-                    else
-                        print("Authentication failed - incorrect password!")
-                    end
-                end
-            end
-            
-            if not auth_changed then
-                print("Server timeout - no response received")
-                print("Check server connection and try again")
-            end
-            
-            sleep(2)
+            -- Don't wait here - just return and let the main loop handle it
         else
             print("")
             print("B - Back")
@@ -748,7 +779,37 @@ local function drawEmergencyScreen()
     end
     
     -- Authentication status and controls
-    if isSecurityAuthenticated() then
+    if auth_request_pending then
+        term.setTextColor(colors.yellow)
+        print("Status: AUTHENTICATING...")
+        term.setTextColor(colors.white)
+        local elapsed = os.time() - auth_request_start_time
+        print("Elapsed: " .. elapsed .. " seconds")
+        print("")
+        print("Please wait...")
+        print("")
+    elseif auth_last_result == "success" then
+        term.setTextColor(colors.green)
+        print("Status: AUTHENTICATION SUCCESS!")
+        term.setTextColor(colors.white)
+        print("You are now logged in.")
+        print("")
+        auth_last_result = nil  -- Clear the result
+    elseif auth_last_result == "failed" then
+        term.setTextColor(colors.red)
+        print("Status: AUTHENTICATION FAILED!")
+        term.setTextColor(colors.white)
+        print("Incorrect password.")
+        print("")
+        auth_last_result = nil  -- Clear the result
+    elseif auth_last_result == "timeout" then
+        term.setTextColor(colors.red)
+        print("Status: AUTHENTICATION TIMEOUT!")
+        term.setTextColor(colors.white)
+        print("No response from server.")
+        print("")
+        auth_last_result = nil  -- Clear the result
+    elseif isSecurityAuthenticated() then
         term.setTextColor(colors.green)
         print("Status: AUTHENTICATED")
         term.setTextColor(colors.white)
@@ -799,37 +860,10 @@ local function handleEmergencyScreenInput()
         print("Enter security password:")
         local password = read("*")
         if password and password ~= "" then
-            print("")
-            print("Contacting server for authentication...")
-            
-            -- Store initial auth state
-            local initial_auth_state = config.security_authenticated
-            
             requestServerAuthentication(password)
-            print("Waiting for server response...")
-            
-            -- Wait for authentication to change or timeout
-            local start_time = os.time()
-            local timeout_seconds = 10
-            local auth_changed = false
-            
-            while (os.time() - start_time) < timeout_seconds and not auth_changed do
-                sleep(0.5)  -- Check every half second
-                if config.security_authenticated ~= initial_auth_state then
-                    auth_changed = true
-                    if config.security_authenticated then
-                        print("Authentication successful!")
-                    else
-                        print("Authentication failed - incorrect password!")
-                    end
-                end
-            end
-            
-            if not auth_changed then
-                print("Server timeout - no response received")
-                print("Check server connection and try again")
-            end
-            
+            print("")
+            print("Authentication request sent...")
+            print("Check status in Emergency Alerts menu")
             sleep(2)
         end
     elseif input:lower() == "o" and isSecurityAuthenticated() then
@@ -1046,6 +1080,7 @@ local function main()
     
     current_screen = "main"
     local presence_timer = os.startTimer(30)
+    local refresh_timer = os.startTimer(1)  -- Short timer for screen refreshes
     
     while true do
         if current_screen == "main" then
@@ -1055,18 +1090,35 @@ local function main()
             end
         elseif current_screen == "security_login" then
             drawSecurityLoginScreen()
-            local input = read()
-            if input:lower() == "b" then
-                current_screen = "main"
-            elseif input:lower() == "l" and isSecurityAuthenticated() then
-                config.security_authenticated = false
-                config.allow_emergency_alerts = false
-                saveData()
-                current_screen = "main"
+            
+            -- Handle input for security login screen
+            if auth_request_pending then
+                -- Auto-refresh while waiting
+                sleep(1)
+            elseif auth_last_result then
+                -- Wait for any key when showing result
+                os.pullEvent("key")
+            else
+                local input = read()
+                if input:lower() == "b" then
+                    current_screen = "main"
+                elseif input:lower() == "l" and isSecurityAuthenticated() then
+                    config.security_authenticated = false
+                    config.allow_emergency_alerts = false
+                    saveData()
+                    current_screen = "main"
+                end
             end
         elseif current_screen == "emergency" then
             drawEmergencyScreen()
-            handleEmergencyScreenInput()
+            
+            -- Auto-refresh if auth is pending
+            if auth_request_pending then
+                -- Don't wait for input, just pause briefly and refresh
+                sleep(1)
+            else
+                handleEmergencyScreenInput()
+            end
         elseif current_screen == "settings" then
             drawSettingsScreen()
             local input = read()
@@ -1173,6 +1225,12 @@ local function main()
                     elseif event == "timer" and param1 == presence_timer then
                         broadcastPresence()
                         presence_timer = os.startTimer(30)
+                    elseif event == "timer" and param1 == refresh_timer then
+                        refresh_timer = os.startTimer(1)
+                        -- Auto-refresh screen if auth is pending
+                        if auth_request_pending and (current_screen == "security_login" or current_screen == "emergency") then
+                            -- This will cause the screen to redraw on next loop iteration
+                        end
                     end
                 end
             end,
