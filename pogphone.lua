@@ -77,8 +77,16 @@ local function loadData()
                         config[key] = value
                     end
                 end
+                -- Store load result for debug viewing
+                addDebugLog("Config loaded OK, user=" .. tostring(config.username))
+            else
+                addDebugLog("Config parse failed")
             end
+        else
+            addDebugLog("Config file open failed")
         end
+    else
+        addDebugLog("Config file missing")
     end
     
     -- Load contacts
@@ -115,18 +123,21 @@ local function loadData()
 end
 
 local function saveData()
-    -- Save config
+    -- Save config first
     local file = fs.open(CONFIG_FILE, "w")
     if file then
         file.write(textutils.serialize(config))
         file.close()
+        addDebugLog("Config saved, user=" .. tostring(config.username))
+    else
+        addDebugLog("Config save failed")
     end
     
     -- Save contacts
-    file = fs.open(CONTACTS_FILE, "w")
-    if file then
-        file.write(textutils.serialize(contacts))
-        file.close()
+    local file2 = fs.open(CONTACTS_FILE, "w")
+    if file2 then
+        file2.write(textutils.serialize(contacts))
+        file2.close()
     end
     
     -- Save messages
@@ -136,10 +147,10 @@ local function saveData()
     end
     messages = recent_messages
     
-    file = fs.open(MESSAGES_FILE, "w")
-    if file then
-        file.write(textutils.serialize(messages))
-        file.close()
+    local file3 = fs.open(MESSAGES_FILE, "w")
+    if file3 then
+        file3.write(textutils.serialize(messages))
+        file3.close()
     end
 end
 
@@ -475,21 +486,29 @@ local function handleMessage(sender_id, message, protocol)
         end
         
     elseif protocol == SECURITY_PROTOCOL then
-        -- Skip messages from ourselves (original sender) or if we already relayed it
-        if sender_id == computer_id or (message.original_sender and message.original_sender == computer_id) then
+        -- Debug: Log all security messages received with details
+        addDebugLog("RCV: " .. sender_id .. " -> " .. (message.type or "?") .. "/" .. (message.action or "?") .. " orig:" .. (message.original_sender or "none"))
+        
+        -- Only skip if this message originally came from us
+        if message.original_sender == computer_id then
+            addDebugLog("SKIP: Message originally from us")
             return
         end
         
-        -- Debug: Log all security messages received
-        addDebugLog("Received from " .. sender_id .. ": " .. (message.type or "unknown") .. "/" .. (message.action or "none"))
+        -- Also skip if sender is us and no relay info (direct loop)
+        if sender_id == computer_id and not message.relayed_by_server then
+            addDebugLog("SKIP: Direct loop from ourselves")
+            return
+        end
         
         -- Always process security messages regardless of authentication for cancel messages
         if message.type == "security_alert" then
             if message.action == "start" and isSecurityAuthenticated() then
-                addDebugLog("Processing START alarm from " .. (message.original_sender or sender_id))
-                active_alarms[message.source_id or message.original_sender or sender_id] = {
+                local source_id = message.source_id or message.original_sender or sender_id
+                addDebugLog("START: Adding alarm from " .. source_id)
+                active_alarms[source_id] = {
                     type = message.alarm_type or "general",
-                    source_name = message.source_name or ("Node-" .. (message.source_id or message.original_sender or sender_id)),
+                    source_name = message.source_name or ("Node-" .. source_id),
                     start_time = message.timestamp or os.time()
                 }
                 
@@ -509,21 +528,24 @@ local function handleMessage(sender_id, message, protocol)
                 end
                 
             elseif message.action == "stop" then
-                addDebugLog("Processing STOP/CANCEL from " .. (message.original_sender or sender_id))
+                addDebugLog("STOP: Processing cancel")
                 -- Process cancel messages regardless of authentication
                 if message.global_cancel then
                     -- Global cancel - clear all alarms
                     active_alarms = {}
-                    addDebugLog("Cleared all alarms (global cancel)")
+                    addDebugLog("STOP: Cleared all alarms")
                 else
                     -- Specific device cancel - clear just that alarm
-                    active_alarms[message.source_id or message.original_sender or sender_id] = nil
-                    addDebugLog("Cleared alarm from " .. (message.source_id or message.original_sender or sender_id))
+                    local source_id = message.source_id or message.original_sender or sender_id
+                    active_alarms[source_id] = nil
+                    addDebugLog("STOP: Cleared alarm from " .. source_id)
                 end
+            elseif message.action == "start" and not isSecurityAuthenticated() then
+                addDebugLog("SKIP: Not authenticated for security")
             end
             
         elseif message.type == "security_heartbeat" and isSecurityAuthenticated() then
-            addDebugLog("Processing heartbeat from " .. message.computer_id)
+            addDebugLog("HB: Processing heartbeat from " .. message.computer_id)
             security_nodes[message.computer_id] = {
                 device_name = message.device_name or ("Node-" .. message.computer_id),
                 device_type = message.device_type or "computer",
@@ -538,7 +560,7 @@ local function handleMessage(sender_id, message, protocol)
                     source_name = message.device_name or ("Node-" .. message.computer_id),
                     start_time = message.alarm_start_time or os.time()
                 }
-                addDebugLog("Added alarm from heartbeat for " .. message.computer_id)
+                addDebugLog("HB: Added alarm from " .. message.computer_id)
             else
                 active_alarms[message.computer_id] = nil
             end
@@ -840,6 +862,40 @@ local function handleEmergencyScreenInput()
     end
 end
 
+local function showDebugLog()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== DEBUG LOG ===")
+    print("Config Username: " .. tostring(config.username))
+    print("Current Username: " .. getUsername())
+    print("Security Auth: " .. tostring(isSecurityAuthenticated()))
+    
+    -- Count active alarms
+    local alarm_count = 0
+    for _ in pairs(active_alarms) do alarm_count = alarm_count + 1 end
+    print("Active Alarms: " .. alarm_count)
+    print("")
+    
+    print("Security Message Log:")
+    if debug_log and #debug_log > 0 then
+        for _, entry in ipairs(debug_log) do
+            print("  " .. entry)
+        end
+    else
+        print("  No messages logged yet")
+    end
+    
+    print("")
+    print("Files:")
+    print("  " .. CONFIG_FILE .. ": " .. (fs.exists(CONFIG_FILE) and "EXISTS" or "MISSING"))
+    print("  " .. CONTACTS_FILE .. ": " .. (fs.exists(CONTACTS_FILE) and "EXISTS" or "MISSING"))
+    print("  " .. MESSAGES_FILE .. ": " .. (fs.exists(MESSAGES_FILE) and "EXISTS" or "MISSING"))
+    
+    print("")
+    print("Press any key to return...")
+    os.pullEvent("key")
+end
+
 local function drawSettingsScreen()
     term.clear()
     term.setCursorPos(1, 1)
@@ -1027,7 +1083,9 @@ local function main()
                 saveData()
                 print("All messages cleared!")
                 sleep(1)
-            elseif input == "8" and isSecurityAuthenticated() then
+            elseif input == "8" then
+                showDebugLog()
+            elseif input == "9" and isSecurityAuthenticated() then
                 config.security_authenticated = false
                 config.allow_emergency_alerts = false
                 saveData()
