@@ -392,7 +392,7 @@ local function relayMessage(original_sender, message)
     end
 end
 
--- Security monitoring
+-- Security monitoring and cross-protocol relay
 local function handleSecurityMessage(sender_id, message)
     if not config.security_monitoring then return end
     
@@ -412,13 +412,11 @@ local function handleSecurityMessage(sender_id, message)
             }
             log("Active alarm added: " .. sender_id .. " (" .. (message.alarm_type or "general") .. ")")
         elseif message.action == "stop" then
-            -- If it's a cancel from this specific device, clear just their alarm
             if active_security_alarms[sender_id] then
                 active_security_alarms[sender_id] = nil
                 log("Active alarm cleared: " .. sender_id)
             end
-            -- If it's a global cancel, clear all alarms
-            if message.alarm_type == nil or message.global_cancel then
+            if message.global_cancel then
                 active_security_alarms = {}
                 log("All active alarms cleared by " .. sender_id)
             end
@@ -434,33 +432,23 @@ local function handleSecurityMessage(sender_id, message)
             alarm_active = (message.action == "start")
         }
         
-        -- IMPORTANT: Relay security messages to other devices (except back to sender)
+        -- CROSS-PROTOCOL RELAY: Always broadcast security messages on security protocol
+        -- This ensures computers, phones, and terminals all receive security alerts
         if config.auto_relay_messages then
-            log("Relaying security alert to network")
+            log("Broadcasting security alert on security protocol")
             
-            -- Add relay information to prevent loops
-            local relay_message = {}
-            for key, value in pairs(message) do
-                relay_message[key] = value
-            end
-            relay_message.relayed_by_server = computer_id
-            relay_message.original_sender = sender_id
-            
-            -- Count how many devices we're sending to
-            local relay_count = 0
-            
-            -- Broadcast to everyone except the original sender
-            for user_id, user_data in pairs(connected_users) do
-                if user_id ~= sender_id then
-                    rednet.send(user_id, relay_message, SECURITY_PROTOCOL)
-                    relay_count = relay_count + 1
-                    log("Sent security relay to user " .. user_id .. " (" .. user_data.username .. ")")
+            -- Don't relay back to sender to prevent loops
+            if not message.relayed_by_server then
+                local relay_message = {}
+                for key, value in pairs(message) do
+                    relay_message[key] = value
                 end
+                relay_message.relayed_by_server = computer_id
+                relay_message.original_sender = sender_id
+                
+                rednet.broadcast(relay_message, SECURITY_PROTOCOL)
+                log("Security alert broadcast completed")
             end
-            
-            -- Also broadcast generally for any devices not in connected_users list
-            rednet.broadcast(relay_message, SECURITY_PROTOCOL)
-            log("Broadcast security relay to network, sent to " .. relay_count .. " specific users")
         end
         
     elseif message.type == "security_heartbeat" then
@@ -474,7 +462,6 @@ local function handleSecurityMessage(sender_id, message)
         
         -- Send active alarms to newly connected devices
         if message.alarm_active == false and next(active_security_alarms) then
-            -- Device is online but not alarming - send them current active alarms
             for alarm_source, alarm_data in pairs(active_security_alarms) do
                 if alarm_source ~= sender_id then
                     local sync_message = {
@@ -485,7 +472,8 @@ local function handleSecurityMessage(sender_id, message)
                         source_name = alarm_data.source_name,
                         timestamp = alarm_data.start_time,
                         device_type = alarm_data.device_type,
-                        sync_message = true  -- Mark as sync to avoid loops
+                        sync_message = true,
+                        relayed_by_server = computer_id
                     }
                     rednet.send(sender_id, sync_message, SECURITY_PROTOCOL)
                     log("Sent alarm sync to " .. sender_id .. " for alarm from " .. alarm_source)
