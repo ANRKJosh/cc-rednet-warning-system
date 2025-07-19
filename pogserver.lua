@@ -446,15 +446,21 @@ local function handleSecurityMessage(sender_id, message)
             relay_message.relayed_by_server = computer_id
             relay_message.original_sender = sender_id
             
+            -- Count how many devices we're sending to
+            local relay_count = 0
+            
             -- Broadcast to everyone except the original sender
             for user_id, user_data in pairs(connected_users) do
                 if user_id ~= sender_id then
                     rednet.send(user_id, relay_message, SECURITY_PROTOCOL)
+                    relay_count = relay_count + 1
+                    log("Sent security relay to user " .. user_id .. " (" .. user_data.username .. ")")
                 end
             end
             
             -- Also broadcast generally for any devices not in connected_users list
             rednet.broadcast(relay_message, SECURITY_PROTOCOL)
+            log("Broadcast security relay to network, sent to " .. relay_count .. " specific users")
         end
         
     elseif message.type == "security_heartbeat" then
