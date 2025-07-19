@@ -388,7 +388,12 @@ local function processBackgroundMessages()
             
         elseif message.type == "direct_message" then
             if message.to_id == computer_id and message.from_id ~= computer_id then
+                addDebugLog("MSG: Received direct message from " .. message.from_id .. ": " .. message.content)
                 addMessage(message.from_id, message.to_id, message.content, "direct")
+                print("\n📧 New message from " .. getContactName(message.from_id) .. "!")
+                if config.notification_sound and speaker then
+                    speaker.playNote("pling", 1.0, 10)
+                end
             end
             
         elseif message.type == "server_announcement" then
@@ -408,7 +413,6 @@ local function processBackgroundMessages()
         
     elseif protocol == SECURITY_PROTOCOL then
         addDebugLog("SECURITY: Processing " .. (message.type or "unknown") .. " action=" .. (message.action or "none"))
-        addDebugLog("SECURITY: From " .. sender_id .. " original=" .. (message.original_sender or "none"))
         
         -- Skip our own messages
         if message.original_sender == computer_id then
@@ -422,8 +426,6 @@ local function processBackgroundMessages()
         end
         
         if message.type == "security_alert" then
-            addDebugLog("SECURITY: Processing security_alert action=" .. (message.action or "unknown"))
-            
             if message.action == "start" then
                 local source_id = message.source_id or message.original_sender or sender_id
                 addDebugLog("SECURITY: Adding alarm from " .. source_id)
@@ -433,8 +435,6 @@ local function processBackgroundMessages()
                     source_name = message.source_name or ("Node-" .. source_id),
                     start_time = message.timestamp or os.time()
                 }
-                
-                addDebugLog("SECURITY: Alarm added - type=" .. (message.alarm_type or "general"))
                 
                 if config.notification_sound and speaker then
                     speaker.playNote("pling", 3.0, 12)
@@ -452,20 +452,15 @@ local function processBackgroundMessages()
                 end
                 
             elseif message.action == "stop" then
-                addDebugLog("SECURITY: Processing stop/cancel")
                 if message.global_cancel then
-                    addDebugLog("SECURITY: Global cancel - clearing all alarms")
                     active_alarms = {}
                 else
                     local source_id = message.source_id or message.original_sender or sender_id
-                    addDebugLog("SECURITY: Clearing alarm from " .. source_id)
                     active_alarms[source_id] = nil
                 end
             end
             
         elseif message.type == "security_heartbeat" then
-            addDebugLog("SECURITY: Processing heartbeat from " .. (message.computer_id or "unknown"))
-            
             security_nodes[message.computer_id] = {
                 device_name = message.device_name or ("Node-" .. message.computer_id),
                 device_type = message.device_type or "computer",
@@ -475,7 +470,6 @@ local function processBackgroundMessages()
             }
             
             if message.alarm_active then
-                addDebugLog("SECURITY: Heartbeat shows alarm active - adding alarm")
                 active_alarms[message.computer_id] = {
                     type = message.alarm_type or "general",
                     source_name = message.device_name or ("Node-" .. message.computer_id),
@@ -498,7 +492,7 @@ local function showMainMenu()
     
     if unread_count > 0 then
         term.setTextColor(colors.yellow)
-        print("Unread: " .. unread_count .. " messages")
+        print("📧 " .. unread_count .. " unread messages")
         term.setTextColor(colors.white)
     end
     
@@ -507,24 +501,17 @@ local function showMainMenu()
     
     if alarm_count > 0 then
         term.setTextColor(colors.red)
-        print("!!! " .. alarm_count .. " ACTIVE ALARMS !!!")
+        print("🚨 " .. alarm_count .. " ACTIVE ALARMS")
         term.setTextColor(colors.white)
-    end
-    
-    print("\nStatus: " .. (isAuthenticated() and "AUTHENTICATED" or "NOT AUTHENTICATED"))
-    if isAuthenticated() then
-        local remaining = auth_expires - os.time()
-        print("Expires: " .. math.floor(remaining / 60) .. " minutes")
     end
     
     print("\nMain Menu:")
     print("1. Messages (" .. unread_count .. " unread)")
     print("2. Send Message")
-    print("3. Online Users")
-    print("4. Emergency Alerts" .. (alarm_count > 0 and " (!)" or ""))
-    print("5. Authenticate")
+    print("3. Contacts")
+    print("4. Online Users")
+    print("5. Emergency Alerts" .. (alarm_count > 0 and " 🚨" or ""))
     print("6. Settings")
-    print("7. Debug Info")
     if is_terminal then
         print("Q. Quit")
     end
@@ -537,35 +524,51 @@ local function showMessages()
     print("=== MESSAGES ===")
     
     if #messages == 0 then
-        print("No messages")
-    else
-        local recent_messages = {}
-        for i = math.max(1, #messages - 9), #messages do
-            table.insert(recent_messages, messages[i])
-        end
-        
-        for _, msg in ipairs(recent_messages) do
-            local time_str = textutils.formatTime(msg.timestamp, true)
-            local from_name = getContactName(msg.from_id)
-            local to_name = getContactName(msg.to_id)
-            
-            if msg.from_id == computer_id then
-                print("[" .. time_str .. "] To " .. to_name .. ": " .. msg.content)
-            else
-                if not msg.read then
-                    term.setTextColor(colors.yellow)
-                    print("[" .. time_str .. "] " .. from_name .. ": " .. msg.content .. " (NEW)")
-                    term.setTextColor(colors.white)
-                    msg.read = true
-                    unread_count = math.max(0, unread_count - 1)
-                else
-                    print("[" .. time_str .. "] " .. from_name .. ": " .. msg.content)
-                end
-            end
-        end
-        saveData()
+        print("📭 No messages")
+        print("\nPress any key to return...")
+        os.pullEvent("key")
+        return
     end
     
+    -- Show recent messages (last 12)
+    local recent_messages = {}
+    for i = math.max(1, #messages - 11), #messages do
+        table.insert(recent_messages, messages[i])
+    end
+    
+    print("Recent Messages:")
+    print("================")
+    
+    for _, msg in ipairs(recent_messages) do
+        local time_str = textutils.formatTime(msg.timestamp, true)
+        local from_name = getContactName(msg.from_id)
+        local to_name = getContactName(msg.to_id)
+        
+        if msg.from_id == computer_id then
+            -- Message sent by us
+            print("[" .. time_str .. "] 📤 To " .. to_name)
+            print("  " .. msg.content)
+        else
+            -- Message received
+            if not msg.read then
+                term.setTextColor(colors.yellow)
+                print("[" .. time_str .. "] 📨 From " .. from_name .. " (NEW)")
+                term.setTextColor(colors.white)
+                msg.read = true
+                unread_count = math.max(0, unread_count - 1)
+            else
+                print("[" .. time_str .. "] 📧 From " .. from_name)
+            end
+            print("  " .. msg.content)
+        end
+        print("")
+    end
+    
+    if #messages > 12 then
+        print("(" .. (#messages - 12) .. " older messages not shown)")
+    end
+    
+    saveData() -- Save read status
     print("\nPress any key to return...")
     os.pullEvent("key")
 end
@@ -575,6 +578,25 @@ local function sendNewMessage()
     term.setCursorPos(1, 1)
     print("=== SEND MESSAGE ===")
     
+    -- Show contacts first
+    local contact_count = 0
+    for _ in pairs(contacts) do contact_count = contact_count + 1 end
+    
+    if contact_count > 0 then
+        print("Contacts:")
+        local contact_list = {}
+        for id, contact in pairs(contacts) do
+            table.insert(contact_list, {id = id, contact = contact})
+        end
+        
+        for i, item in ipairs(contact_list) do
+            local status = online_users[item.id] and "📱" or "📴"
+            print("C" .. i .. ". " .. status .. " " .. item.contact.name)
+        end
+        print("")
+    end
+    
+    -- Get online users
     local user_list = {}
     for id, user in pairs(online_users) do
         if id ~= computer_id then
@@ -583,12 +605,11 @@ local function sendNewMessage()
     end
     
     if #user_list == 0 then
-        print("No users online. Requesting user list...")
+        print("📡 Getting online users...")
         requestUserList()
-        print("Waiting for user list...")
         
         local start_time = os.clock()
-        while (os.clock() - start_time) < 5 do
+        while (os.clock() - start_time) < 3 do
             processBackgroundMessages()
         end
         
@@ -600,63 +621,181 @@ local function sendNewMessage()
         end
     end
     
-    if #user_list == 0 then
-        print("No users online.")
-        print("Press any key to return...")
+    if #user_list > 0 then
+        print("Online Users:")
+        for i, user in ipairs(user_list) do
+            print("U" .. i .. ". 📱 " .. user.data.username)
+        end
+        print("")
+    end
+    
+    if contact_count == 0 and #user_list == 0 then
+        print("No contacts or online users found.")
+        print("Add contacts first or wait for users to come online.")
+        print("\nPress any key to return...")
         os.pullEvent("key")
         return
     end
     
-    print("Online Users:")
-    for i, user in ipairs(user_list) do
-        print(i .. ". " .. user.data.username)
+    print("Enter choice (C1-C" .. contact_count .. " for contacts, U1-U" .. #user_list .. " for online users):")
+    print("Or B to go back")
+    local choice = read()
+    
+    if choice:lower() == "b" then
+        return
     end
     
-    print("\nEnter user number:")
-    local user_choice = tonumber(read())
+    local target_id = nil
+    local target_name = nil
     
-    if user_choice and user_choice >= 1 and user_choice <= #user_list then
-        local target_user = user_list[user_choice]
-        print("To: " .. target_user.data.username)
+    -- Parse contact choice
+    if choice:sub(1,1):lower() == "c" then
+        local contact_num = tonumber(choice:sub(2))
+        if contact_num then
+            local contact_list = {}
+            for id, contact in pairs(contacts) do
+                table.insert(contact_list, {id = id, contact = contact})
+            end
+            
+            if contact_num >= 1 and contact_num <= #contact_list then
+                target_id = contact_list[contact_num].id
+                target_name = contact_list[contact_num].contact.name
+            end
+        end
+    end
+    
+    -- Parse online user choice
+    if choice:sub(1,1):lower() == "u" then
+        local user_num = tonumber(choice:sub(2))
+        if user_num and user_num >= 1 and user_num <= #user_list then
+            target_id = user_list[user_num].id
+            target_name = user_list[user_num].data.username
+        end
+    end
+    
+    if target_id and target_name then
+        print("\nTo: " .. target_name)
         print("Message:")
         local message_content = read()
         
         if message_content and message_content ~= "" then
-            sendDirectMessage(target_user.id, message_content)
-            print("Message sent!")
-            sleep(1)
+            sendDirectMessage(target_id, message_content)
+            print("✓ Message sent!")
+            if not online_users[target_id] then
+                print("(Recipient is offline - message will be delivered when they come online)")
+            end
+            sleep(2)
         end
+    else
+        print("Invalid choice")
+        sleep(1)
     end
 end
 
-local function showOnlineUsers()
+local function showContacts()
     term.clear()
     term.setCursorPos(1, 1)
-    print("=== ONLINE USERS ===")
+    print("=== CONTACTS ===")
     
-    requestUserList()
-    print("Requesting user list...")
+    local contact_count = 0
+    for _ in pairs(contacts) do contact_count = contact_count + 1 end
     
-    local start_time = os.clock()
-    while (os.clock() - start_time) < 3 do
-        processBackgroundMessages()
+    if contact_count == 0 then
+        print("No contacts saved.")
+        print("")
+        print("A - Add Contact | B - Back")
+    else
+        print("Saved Contacts:")
+        local contact_list = {}
+        for id, contact in pairs(contacts) do
+            table.insert(contact_list, {id = id, contact = contact})
+        end
+        
+        for i, item in ipairs(contact_list) do
+            local status = online_users[item.id] and "📱 Online" or "📴 Offline"
+            print(i .. ". " .. item.contact.name .. " (ID: " .. item.id .. ") " .. status)
+        end
+        
+        print("")
+        print("1-" .. #contact_list .. " - Message Contact")
+        print("A - Add Contact | D - Delete Contact | B - Back")
     end
     
-    local count = 0
-    for user_id, user_data in pairs(online_users) do
-        if user_id ~= computer_id then
-            count = count + 1
-            local time_ago = os.time() - user_data.last_seen
-            print(user_data.username .. " (" .. user_data.device_type .. ") - " .. time_ago .. "s ago")
+    print("\nEnter choice:")
+    local input = read()
+    
+    if input:lower() == "b" then
+        return
+    elseif input:lower() == "a" then
+        -- Add contact
+        print("\nAdd Contact")
+        print("Enter contact's computer ID:")
+        local contact_id = tonumber(read())
+        
+        if contact_id and contact_id ~= computer_id then
+            print("Enter contact name:")
+            local contact_name = read()
+            
+            if contact_name and contact_name ~= "" then
+                contacts[contact_id] = {
+                    name = contact_name,
+                    id = contact_id,
+                    added_time = os.time()
+                }
+                saveData()
+                print("✓ Contact added!")
+                sleep(1)
+            end
+        else
+            print("Invalid ID")
+            sleep(1)
+        end
+        
+    elseif input:lower() == "d" and contact_count > 0 then
+        -- Delete contact
+        print("\nDelete Contact")
+        print("Enter contact number to delete:")
+        local contact_num = tonumber(read())
+        
+        if contact_num and contact_num >= 1 and contact_num <= contact_count then
+            local contact_list = {}
+            for id, contact in pairs(contacts) do
+                table.insert(contact_list, {id = id, contact = contact})
+            end
+            
+            local to_delete = contact_list[contact_num]
+            contacts[to_delete.id] = nil
+            saveData()
+            print("✓ Contact deleted!")
+            sleep(1)
+        end
+        
+    else
+        -- Try to message contact
+        local contact_num = tonumber(input)
+        if contact_num and contact_count > 0 then
+            local contact_list = {}
+            for id, contact in pairs(contacts) do
+                table.insert(contact_list, {id = id, contact = contact})
+            end
+            
+            if contact_num >= 1 and contact_num <= #contact_list then
+                local target_contact = contact_list[contact_num]
+                print("\nTo: " .. target_contact.contact.name)
+                print("Message:")
+                local message_content = read()
+                
+                if message_content and message_content ~= "" then
+                    sendDirectMessage(target_contact.id, message_content)
+                    print("✓ Message sent to " .. target_contact.contact.name .. "!")
+                    if not online_users[target_contact.id] then
+                        print("(Contact is offline - message will be delivered when they come online)")
+                    end
+                    sleep(2)
+                end
+            end
         end
     end
-    
-    if count == 0 then
-        print("No other users online")
-    end
-    
-    print("\nPress any key to return...")
-    os.pullEvent("key")
 end
 
 local function showEmergencyAlerts()
@@ -757,15 +896,58 @@ local function showEmergencyAlerts()
     end
 end
 
+local function showOnlineUsers()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== ONLINE USERS ===")
+    
+    requestUserList()
+    print("📡 Requesting user list...")
+    
+    local start_time = os.clock()
+    while (os.clock() - start_time) < 3 do
+        processBackgroundMessages()
+    end
+    
+    local count = 0
+    for user_id, user_data in pairs(online_users) do
+        if user_id ~= computer_id then
+            count = count + 1
+            local time_ago = os.time() - user_data.last_seen
+            local contact_name = contacts[user_id] and (" (" .. contacts[user_id].name .. ")") or ""
+            print("📱 " .. user_data.username .. contact_name .. " - " .. time_ago .. "s ago")
+        end
+    end
+    
+    if count == 0 then
+        print("No other users online")
+    end
+    
+    print("\nPress any key to return...")
+    os.pullEvent("key")
+end
+
 local function showSettings()
     term.clear()
     term.setCursorPos(1, 1)
     print("=== SETTINGS ===")
     print("")
+    print("User Settings:")
     print("1. Username: " .. getUsername())
     print("2. Notifications: " .. (config.notification_sound and "ON" or "OFF"))
     print("3. Vibrate: " .. (config.vibrate_on_message and "ON" or "OFF"))
-    print("4. Clear Messages")
+    print("")
+    print("Security:")
+    print("4. Emergency Auth: " .. (isAuthenticated() and "AUTHENTICATED" or "NOT AUTHENTICATED"))
+    if isAuthenticated() then
+        local remaining = auth_expires - os.time()
+        print("   Expires: " .. math.floor(remaining / 60) .. " minutes")
+    end
+    print("")
+    print("Data:")
+    print("5. Clear Messages")
+    print("6. Debug Info")
+    print("")
     print("B. Back")
     print("\nEnter choice:")
     
@@ -779,25 +961,57 @@ local function showSettings()
         if new_name and new_name ~= "" then
             config.username = new_name
             saveData()
-            print("Username updated!")
+            print("✓ Username updated!")
         end
         sleep(1)
     elseif input == "2" then
         config.notification_sound = not config.notification_sound
         saveData()
-        print("\nNotifications " .. (config.notification_sound and "enabled" or "disabled"))
+        print("\n✓ Notifications " .. (config.notification_sound and "enabled" or "disabled"))
         sleep(1)
     elseif input == "3" then
         config.vibrate_on_message = not config.vibrate_on_message
         saveData()
-        print("\nVibrate " .. (config.vibrate_on_message and "enabled" or "disabled"))
+        print("\n✓ Vibrate " .. (config.vibrate_on_message and "enabled" or "disabled"))
         sleep(1)
     elseif input == "4" then
-        messages = {}
-        unread_count = 0
-        saveData()
-        print("\nAll messages cleared!")
+        if isAuthenticated() then
+            print("\nOptions:")
+            print("L - Logout")
+            print("Any other key to cancel")
+            local auth_input = read()
+            if auth_input:lower() == "l" then
+                authenticated = false
+                auth_expires = 0
+                print("✓ Logged out of emergency system")
+                sleep(1)
+            end
+        else
+            print("\nEnter emergency system password:")
+            local password = read("*")
+            if password and password ~= "" then
+                if authenticate(password) then
+                    print("✓ Emergency authentication successful!")
+                else
+                    print("✗ Authentication failed!")
+                end
+                sleep(2)
+            end
+        end
+    elseif input == "5" then
+        print("\nClear all messages? (y/N)")
+        local confirm = read()
+        if confirm:lower() == "y" then
+            messages = {}
+            unread_count = 0
+            saveData()
+            print("✓ All messages cleared!")
+        else
+            print("Cancelled")
+        end
         sleep(1)
+    elseif input == "6" then
+        showDebugInfo()
     end
 end
 
@@ -856,20 +1070,13 @@ local function main()
         elseif choice == "2" then
             sendNewMessage()
         elseif choice == "3" then
-            showOnlineUsers()
+            showContacts()
         elseif choice == "4" then
-            showEmergencyAlerts()
+            showOnlineUsers()
         elseif choice == "5" then
-            print("\nEnter password:")
-            local password = read("*")
-            if password and password ~= "" then
-                authenticate(password)
-                sleep(2)
-            end
+            showEmergencyAlerts()
         elseif choice == "6" then
             showSettings()
-        elseif choice == "7" then
-            showDebugInfo()
         elseif choice:lower() == "q" and is_terminal then
             break
         end
