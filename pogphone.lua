@@ -70,6 +70,9 @@ local auth_last_result = nil
 -- Debug logging
 debug_log = debug_log or {}
 
+-- Debug logging
+debug_log = debug_log or {}
+
 local function addDebugLog(message)
     if not debug_log then debug_log = {} end
     table.insert(debug_log, textutils.formatTime(os.time(), true) .. " " .. message)
@@ -261,11 +264,13 @@ local function requestServerAuthentication(password)
         username = getUsername(),
         timestamp = os.time()
     }
+    
+    addDebugLog("AUTH: Sending request for user " .. computer_id)
     rednet.broadcast(message, PHONE_PROTOCOL)
     
     -- Set pending state
     auth_request_pending = true
-    auth_request_start_time = os.time()
+    auth_request_start_time = os.clock()  -- Use os.clock() for elapsed time
     auth_last_result = nil
     
     return true
@@ -474,6 +479,9 @@ local function handleMessage(sender_id, message, protocol)
             end
             
         elseif message.type == "security_auth_response" then
+            -- Add debug logging for auth responses
+            addDebugLog("AUTH: Received response, authenticated=" .. tostring(message.authenticated))
+            
             -- Clear pending auth request
             auth_request_pending = false
             
@@ -482,11 +490,13 @@ local function handleMessage(sender_id, message, protocol)
                 config.security_auth_expires = message.expires or (os.time() + 3600)
                 config.allow_emergency_alerts = true
                 auth_last_result = "success"
+                addDebugLog("AUTH: Success - authenticated until " .. config.security_auth_expires)
                 saveData()
             else
                 config.security_authenticated = false
                 config.allow_emergency_alerts = false
                 auth_last_result = "failed"
+                addDebugLog("AUTH: Failed - incorrect password")
                 saveData()
             end
             
@@ -671,8 +681,8 @@ local function drawSecurityLoginScreen()
         term.setTextColor(colors.white)
         print("")
         print("Contacting server for authentication...")
-        local elapsed = os.time() - auth_request_start_time
-        print("Elapsed: " .. elapsed .. " seconds")
+        local elapsed = os.clock() - auth_request_start_time
+        print("Elapsed: " .. math.floor(elapsed) .. " seconds")
         
         -- Check for timeout
         if elapsed > 10 then
@@ -682,6 +692,13 @@ local function drawSecurityLoginScreen()
         
         print("")
         print("Please wait or press B to cancel...")
+        
+        -- Show debug info
+        print("")
+        print("Debug:")
+        print("  Auth pending: " .. tostring(auth_request_pending))
+        print("  Auth result: " .. tostring(auth_last_result))
+        print("  Is authenticated: " .. tostring(isSecurityAuthenticated()))
     elseif auth_last_result then
         -- Show result of last attempt
         if auth_last_result == "success" then
@@ -783,8 +800,8 @@ local function drawEmergencyScreen()
         term.setTextColor(colors.yellow)
         print("Status: AUTHENTICATING...")
         term.setTextColor(colors.white)
-        local elapsed = os.time() - auth_request_start_time
-        print("Elapsed: " .. elapsed .. " seconds")
+        local elapsed = os.clock() - auth_request_start_time
+        print("Elapsed: " .. math.floor(elapsed) .. " seconds")
         print("")
         print("Please wait...")
         print("")
@@ -1093,8 +1110,8 @@ local function main()
             
             -- Handle input for security login screen
             if auth_request_pending then
-                -- Auto-refresh while waiting
-                sleep(1)
+                -- Don't block - let the main loop continue to process messages
+                -- The screen will auto-refresh on next iteration
             elseif auth_last_result then
                 -- Wait for any key when showing result
                 os.pullEvent("key")
@@ -1112,11 +1129,8 @@ local function main()
         elseif current_screen == "emergency" then
             drawEmergencyScreen()
             
-            -- Auto-refresh if auth is pending
-            if auth_request_pending then
-                -- Don't wait for input, just pause briefly and refresh
-                sleep(1)
-            else
+            -- Don't block if auth is pending - let background processing continue
+            if not auth_request_pending then
                 handleEmergencyScreenInput()
             end
         elseif current_screen == "settings" then
@@ -1226,16 +1240,22 @@ local function main()
                         broadcastPresence()
                         presence_timer = os.startTimer(30)
                     elseif event == "timer" and param1 == refresh_timer then
-                        refresh_timer = os.startTimer(1)
-                        -- Auto-refresh screen if auth is pending
-                        if auth_request_pending and (current_screen == "security_login" or current_screen == "emergency") then
-                            -- This will cause the screen to redraw on next loop iteration
+                        -- Refresh more frequently when auth is pending
+                        if auth_request_pending then
+                            refresh_timer = os.startTimer(0.5)  -- Faster refresh when waiting
+                        else
+                            refresh_timer = os.startTimer(2)    -- Normal refresh
                         end
                     end
                 end
             end,
             function()
-                sleep(0.1)
+                -- Short sleep to allow screen updates when auth state changes
+                if auth_request_pending then
+                    sleep(0.2)  -- Quick cycle when waiting for auth
+                else
+                    sleep(1)    -- Normal cycle
+                end
             end
         )
     end
