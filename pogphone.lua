@@ -83,15 +83,36 @@ local function loadData()
         if file then
             local content = file.readAll()
             file.close()
-            addDebugLog("Raw config: " .. string.sub(content, 1, 50) .. "...")
+            addDebugLog("Raw config: " .. string.sub(content, 1, 100) .. "...")
             
             local success, data = pcall(textutils.unserialize, content)
             if success and data then
                 addDebugLog("Config parsed, username in data = " .. tostring(data.username))
                 for key, value in pairs(data) do
-                    if config[key] ~= nil then
-                        addDebugLog("Setting config." .. key .. " = " .. tostring(value))
-                        config[key] = value
+                    -- Skip security fields that shouldn't persist
+                    if key ~= "security_authenticated" and key ~= "security_auth_expires" and key ~= "allow_emergency_alerts" then
+                        -- Allow username and other valid config keys (even if they're nil in default config)
+                        local valid_keys = {
+                            "username", "server_id", "auto_connect", "message_history_limit", 
+                            "notification_sound", "vibrate_on_message", "compact_mode", "update_url",
+                            "modem_type_override", "force_ender_modem"
+                        }
+                        local is_valid = false
+                        for _, valid_key in ipairs(valid_keys) do
+                            if key == valid_key then
+                                is_valid = true
+                                break
+                            end
+                        end
+                        
+                        if is_valid then
+                            addDebugLog("Setting config." .. key .. " = " .. tostring(value))
+                            config[key] = value
+                        else
+                            addDebugLog("Skipping unknown key: " .. key)
+                        end
+                    else
+                        addDebugLog("Skipping security field: " .. key)
                     end
                 end
                 addDebugLog("Config loaded OK, final user=" .. tostring(config.username))
@@ -925,6 +946,26 @@ local function showDebugLog()
     os.pullEvent("key")
 end
 
+local function addNewContact()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== ADD CONTACT ===")
+    print("")
+    print("Enter user ID:")
+    local user_id = tonumber(read())
+    
+    if user_id then
+        print("Enter display name:")
+        local display_name = read()
+        
+        if display_name and display_name ~= "" then
+            addContact(user_id, display_name)
+            print("Contact added!")
+            sleep(1)
+        end
+    end
+end
+
 local function drawSettingsScreen()
     term.clear()
     term.setCursorPos(1, 1)
@@ -1031,6 +1072,12 @@ local function main()
     
     loadData()
     
+    -- Reset security authentication on startup for security
+    config.security_authenticated = false
+    config.security_auth_expires = 0
+    config.allow_emergency_alerts = false
+    addDebugLog("Security auth reset on startup")
+    
     -- Don't prompt for username on startup - user can change it in settings
     -- getUsername() will always return something reasonable
     
@@ -1114,7 +1161,9 @@ local function main()
                 sleep(1)
             elseif input == "8" then
                 showDebugLog()
-            elseif input == "9" and isSecurityAuthenticated() then
+            elseif input == "9" then
+                testNetwork()
+            elseif input == "10" and isSecurityAuthenticated() then
                 config.security_authenticated = false
                 config.allow_emergency_alerts = false
                 saveData()
