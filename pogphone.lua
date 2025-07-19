@@ -62,9 +62,8 @@ local selected_contact = nil
 local security_nodes = {}
 local active_alarms = {}
 
--- Data management
-
 -- Debug logging function (must be first!)
+local debug_log = {}
 local function addDebugLog(message)
     if not debug_log then
         debug_log = {}
@@ -76,6 +75,7 @@ local function addDebugLog(message)
     end
 end
 
+-- Data management
 local function loadData()
     -- Load config
     if fs.exists(CONFIG_FILE) then
@@ -83,41 +83,17 @@ local function loadData()
         if file then
             local content = file.readAll()
             file.close()
-            addDebugLog("Raw config: " .. string.sub(content, 1, 100) .. "...")
-            
             local success, data = pcall(textutils.unserialize, content)
             if success and data then
-                addDebugLog("Config parsed, username in data = " .. tostring(data.username))
                 for key, value in pairs(data) do
-                    -- Skip security fields that shouldn't persist
-                    if key ~= "security_authenticated" and key ~= "security_auth_expires" and key ~= "allow_emergency_alerts" then
-                        -- Allow username and other valid config keys (even if they're nil in default config)
-                        local valid_keys = {
-                            "username", "server_id", "auto_connect", "message_history_limit", 
-                            "notification_sound", "vibrate_on_message", "compact_mode", "update_url",
-                            "modem_type_override", "force_ender_modem"
-                        }
-                        local is_valid = false
-                        for _, valid_key in ipairs(valid_keys) do
-                            if key == valid_key then
-                                is_valid = true
-                                break
-                            end
-                        end
-                        
-                        if is_valid then
-                            addDebugLog("Setting config." .. key .. " = " .. tostring(value))
-                            config[key] = value
-                        else
-                            addDebugLog("Skipping unknown key: " .. key)
-                        end
-                    else
-                        addDebugLog("Skipping security field: " .. key)
+                    if config[key] ~= nil then
+                        config[key] = value
                     end
                 end
-                addDebugLog("Config loaded OK, final user=" .. tostring(config.username))
+                -- Store load result for debug viewing
+                addDebugLog("Config loaded OK, user=" .. tostring(config.username))
             else
-                addDebugLog("Config parse failed: " .. tostring(data))
+                addDebugLog("Config parse failed")
             end
         else
             addDebugLog("Config file open failed")
@@ -160,25 +136,14 @@ local function loadData()
 end
 
 local function saveData()
-    -- Debug: Show what we're about to save
-    addDebugLog("Saving config.username = " .. tostring(config.username))
-    
     -- Save config first
     local file = fs.open(CONFIG_FILE, "w")
     if file then
-        local serialized = textutils.serialize(config)
-        file.write(serialized)
+        file.write(textutils.serialize(config))
         file.close()
-        addDebugLog("Config saved successfully")
-        -- Debug: Read it back immediately to verify
-        local verify_file = fs.open(CONFIG_FILE, "r")
-        if verify_file then
-            local content = verify_file.readAll()
-            verify_file.close()
-            addDebugLog("Verify save: " .. string.sub(content, 1, 50) .. "...")
-        end
+        addDebugLog("Config saved, user=" .. tostring(config.username))
     else
-        addDebugLog("Config save failed - file open error")
+        addDebugLog("Config save failed")
     end
     
     -- Save contacts
@@ -260,7 +225,6 @@ local function setUsername()
     local new_name = read()
     if new_name and new_name ~= "" then
         config.username = new_name
-        addDebugLog("Set username to: " .. new_name)
         saveData()
         print("Username set to: " .. new_name)
         sleep(1)
@@ -268,7 +232,6 @@ local function setUsername()
         -- Save the current username if not already saved
         if not config.username then
             config.username = current
-            addDebugLog("Saved current username: " .. current)
             saveData()
             print("Username saved as: " .. current)
         else
@@ -370,7 +333,7 @@ local function addMessage(from_id, to_id, content, msg_type)
     return message
 end
 
--- Security alert functions
+-- Security alert functions (FIXED WITH PASSWORD HASH)
 local function sendSecurityAlert(alarm_type)
     if not config.allow_emergency_alerts or not isSecurityAuthenticated() then
         return false, "Not authenticated for emergency alerts"
@@ -387,7 +350,8 @@ local function sendSecurityAlert(alarm_type)
         message_id = computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999),
         hops = 0,
         device_type = is_terminal and "terminal" or "computer",
-        authenticated_user = true
+        authenticated_user = true,
+        password_hash = hashPassword("poggishtown2025")  -- FIXED: Added password hash
     }
     
     rednet.broadcast(message, SECURITY_PROTOCOL)
@@ -417,7 +381,9 @@ local function sendSecurityCancel()
         message_id = computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999),
         hops = 0,
         device_type = is_terminal and "terminal" or "computer",
-        authenticated_user = true
+        authenticated_user = true,
+        password_hash = hashPassword("poggishtown2025"),  -- FIXED: Added password hash
+        global_cancel = true  -- FIXED: Added global cancel flag
     }
     
     rednet.broadcast(message, SECURITY_PROTOCOL)
@@ -432,10 +398,12 @@ local function requestAlarmSync()
         device_name = getUsername(),
         timestamp = os.time(),
         alarm_active = false,  -- We're not alarming, trigger sync
-        device_type = is_terminal and "terminal" or "computer"
+        device_type = is_terminal and "terminal" or "computer",
+        password_hash = hashPassword("poggishtown2025")  -- FIXED: Added password hash
     }
     rednet.broadcast(message, SECURITY_PROTOCOL)
 end
+
 -- Network communication
 local function broadcastPresence()
     local message = {
@@ -470,6 +438,61 @@ local function requestUserList()
         timestamp = os.time()
     }
     rednet.broadcast(message, PHONE_PROTOCOL)
+end
+
+-- Network testing function (FIXED: Added missing function)
+local function testNetwork()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== NETWORK TEST ===")
+    print("Testing communication with other devices...")
+    print("")
+    
+    -- Test phone protocol
+    local test_message = {
+        type = "network_test",
+        from_id = computer_id,
+        username = getUsername(),
+        timestamp = os.time()
+    }
+    rednet.broadcast(test_message, PHONE_PROTOCOL)
+    print("Sent phone protocol test...")
+    
+    -- Test security protocol  
+    local security_test = {
+        type = "security_test",
+        from_id = computer_id,
+        username = getUsername(),
+        timestamp = os.time(),
+        password_hash = hashPassword("poggishtown2025")
+    }
+    rednet.broadcast(security_test, SECURITY_PROTOCOL)
+    print("Sent security protocol test...")
+    
+    print("Listening for responses (5 seconds)...")
+    local responses = 0
+    local timeout = os.startTimer(5)
+    
+    while true do
+        local event, param1, param2, param3 = os.pullEvent()
+        if event == "rednet_message" then
+            local sender_id, message, protocol = param1, param2, param3
+            if (message.type == "network_test_response" or message.type == "security_test_response") and sender_id ~= computer_id then
+                responses = responses + 1
+                print("Response from " .. sender_id .. " on " .. protocol)
+            end
+        elseif event == "timer" and param1 == timeout then
+            break
+        end
+    end
+    
+    print("")
+    print("Test complete. " .. responses .. " responses received.")
+    if responses == 0 then
+        print("No responses - check network connections!")
+    end
+    print("Press any key to return...")
+    os.pullEvent("key")
 end
 
 -- Message processing
@@ -533,6 +556,16 @@ local function handleMessage(sender_id, message, protocol)
                     saveData()
                 end
             end
+            
+        elseif message.type == "network_test" and message.from_id ~= computer_id then
+            -- Respond to network tests from other devices
+            local response = {
+                type = "network_test_response",
+                from_id = computer_id,
+                username = getUsername(),
+                timestamp = os.time()
+            }
+            rednet.send(sender_id, response, PHONE_PROTOCOL)
         end
         
     elseif protocol == SECURITY_PROTOCOL then
@@ -548,6 +581,18 @@ local function handleMessage(sender_id, message, protocol)
         -- Also skip if sender is us and no relay info (direct loop)
         if sender_id == computer_id and not message.relayed_by_server then
             addDebugLog("SKIP: Direct loop from ourselves")
+            return
+        end
+        
+        -- Handle network test responses
+        if message.type == "security_test" and message.from_id ~= computer_id then
+            local response = {
+                type = "security_test_response",
+                from_id = computer_id,
+                username = getUsername(),
+                timestamp = os.time()
+            }
+            rednet.send(sender_id, response, SECURITY_PROTOCOL)
             return
         end
         
@@ -946,26 +991,6 @@ local function showDebugLog()
     os.pullEvent("key")
 end
 
-local function addNewContact()
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("=== ADD CONTACT ===")
-    print("")
-    print("Enter user ID:")
-    local user_id = tonumber(read())
-    
-    if user_id then
-        print("Enter display name:")
-        local display_name = read()
-        
-        if display_name and display_name ~= "" then
-            addContact(user_id, display_name)
-            print("Contact added!")
-            sleep(1)
-        end
-    end
-end
-
 local function drawSettingsScreen()
     term.clear()
     term.setCursorPos(1, 1)
@@ -979,9 +1004,11 @@ local function drawSettingsScreen()
     print("5. Modem Type: " .. config.modem_type_override)
     print("6. Request Server Config")
     print("7. Clear All Messages")
+    print("8. Debug Log")
+    print("9. Network Test")  -- FIXED: Added network test option
     
     if isSecurityAuthenticated() then
-        print("8. Security Logout")
+        print("10. Security Logout")  -- FIXED: Moved to option 10
     end
     
     print("B. Back")
@@ -1162,8 +1189,8 @@ local function main()
             elseif input == "8" then
                 showDebugLog()
             elseif input == "9" then
-                testNetwork()
-            elseif input == "10" and isSecurityAuthenticated() then
+                testNetwork()  -- FIXED: Added network test call
+            elseif input == "10" and isSecurityAuthenticated() then  -- FIXED: Moved to option 10
                 config.security_authenticated = false
                 config.allow_emergency_alerts = false
                 saveData()
@@ -1222,7 +1249,6 @@ local function main()
                     
                     if event == "rednet_message" then
                         local sender_id, message, protocol = param1, param2, param3
-                        addDebugLog("REDNET: " .. protocol .. " from " .. sender_id)
                         if protocol == PHONE_PROTOCOL or protocol == SECURITY_PROTOCOL then
                             handleMessage(sender_id, message, protocol)
                         end
