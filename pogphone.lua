@@ -355,6 +355,18 @@ local function sendSecurityCancel()
     return true, "Cancel sent"
 end
 
+local function requestAlarmSync()
+    -- Send a heartbeat to trigger alarm sync from server
+    local message = {
+        type = "security_heartbeat",
+        computer_id = computer_id,
+        device_name = getUsername(),
+        timestamp = os.time(),
+        alarm_active = false,  -- We're not alarming, trigger sync
+        device_type = is_terminal and "terminal" or "computer"
+    }
+    rednet.broadcast(message, SECURITY_PROTOCOL)
+end
 -- Network communication
 local function broadcastPresence()
     local message = {
@@ -480,7 +492,13 @@ local function handleMessage(sender_id, message, protocol)
                     end
                     
                 elseif message.action == "stop" then
-                    active_alarms[message.source_id] = nil
+                    if message.global_cancel then
+                        -- Global cancel - clear all alarms
+                        active_alarms = {}
+                    else
+                        -- Specific device cancel - clear just that alarm
+                        active_alarms[message.source_id] = nil
+                    end
                 end
                 
             elseif message.type == "security_heartbeat" then
@@ -908,6 +926,13 @@ local function main()
     
     broadcastPresence()
     requestUserList()
+    
+    -- Request alarm sync if authenticated
+    if isSecurityAuthenticated() then
+        requestAlarmSync()
+        print("Requesting alarm sync...")
+        sleep(1)
+    end
     
     current_screen = "main"
     local presence_timer = os.startTimer(30)
