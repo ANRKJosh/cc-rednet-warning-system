@@ -2,56 +2,6 @@
 -- Modern messaging and communication system
 -- Protocol: pogphone (separate from security system)
 
-local function handleEmergencyScreenInput()
-    local input = read()
-    
-    if input:lower() == "b" then
-        current_screen = "main"
-    elseif input:lower() == "r" then
-        -- Refresh by staying on same screen
-        return
-    elseif config.allow_emergency_alerts then
-        if input:lower() == "g" then
-            local success, message = sendSecurityAlert("general")
-            print("")
-            if success then
-                print("GENERAL ALERT SENT!")
-            else
-                print("Failed: " .. message)
-            end
-            sleep(2)
-        elseif input:lower() == "e" then
-            local success, message = sendSecurityAlert("evacuation")
-            print("")
-            if success then
-                print("EVACUATION ALERT SENT!")
-            else
-                print("Failed: " .. message)
-            end
-            sleep(2)
-        elseif input:lower() == "l" then
-            local success, message = sendSecurityAlert("lockdown")
-            print("")
-            if success then
-                print("LOCKDOWN ALERT SENT!")
-            else
-                print("Failed: " .. message)
-            end
-            sleep(2)
-        elseif input:lower() == "c" then
-            local success, message = sendSecurityCancel()
-            print("")
-            if success then
-                print("CANCEL SIGNAL SENT!")
-            else
-                print("Failed: " .. message)
-            end
-            sleep(2)
-        end
-    end
-endlocal function handleMainScreenInput()
-    local input = read()
-
 local PHONE_PROTOCOL = "pogphone"
 local SECURITY_PROTOCOL = "pogalert"  -- Add security protocol
 local CONFIG_FILE = "pogphone_config"
@@ -585,104 +535,6 @@ local function drawMessagesScreen()
     print("Enter number to open, M for new message, B to go back:")
 end
 
-local function drawConversationScreen(user_id)
-    term.clear()
-    term.setCursorPos(1, 1)
-    
-    local contact_name = getContactName(user_id)
-    print("=== CONVERSATION ===")
-    print("With: " .. contact_name .. " (ID: " .. user_id .. ")")
-    print("")
-    
-    -- Show recent messages
-    local conv_messages = {}
-    for _, msg in ipairs(messages) do
-        if (msg.from_id == user_id and msg.to_id == computer_id) or 
-           (msg.from_id == computer_id and msg.to_id == user_id) then
-            table.insert(conv_messages, msg)
-        end
-    end
-    
-    -- Show last 10 messages
-    local start_idx = math.max(1, #conv_messages - 9)
-    for i = start_idx, #conv_messages do
-        local msg = conv_messages[i]
-        local time_str = textutils.formatTime(msg.timestamp, true)
-        local sender = (msg.from_id == computer_id) and "You" or getContactName(msg.from_id)
-        
-        if msg.from_id == computer_id then
-            term.setTextColor(colors.cyan)
-        else
-            term.setTextColor(colors.yellow)
-        end
-        
-        print("[" .. time_str .. "] " .. sender .. ":")
-        term.setTextColor(colors.white)
-        print("  " .. msg.content)
-        print("")
-    end
-    
-    print("R. Reply | A. Add Contact | B. Back")
-end
-
-local function drawContactsScreen()
-    term.clear()
-    term.setCursorPos(1, 1)
-    drawHeader()
-    
-    if next(contacts) == nil then
-        print("No contacts saved.")
-        print("")
-        print("A. Add Contact | B. Back")
-        return
-    end
-    
-    print("Contacts:")
-    local contact_list = {}
-    for id, contact in pairs(contacts) do
-        table.insert(contact_list, contact)
-    end
-    table.sort(contact_list, function(a, b) return a.name < b.name end)
-    
-    for i, contact in ipairs(contact_list) do
-        local online_status = online_users[contact.id] and " (Online)" or " (Offline)"
-        print(i .. ". " .. contact.name .. online_status)
-    end
-    
-    print("")
-    print("Enter number to message, A to add contact, B to go back:")
-end
-
-local function drawOnlineUsersScreen()
-    term.clear()
-    term.setCursorPos(1, 1)
-    drawHeader()
-    
-    if next(online_users) == nil then
-        print("No users online.")
-        print("")
-        print("R. Refresh | B. Back")
-        return
-    end
-    
-    print("Online Users:")
-    local user_list = {}
-    for id, user in pairs(online_users) do
-        if id ~= computer_id then  -- Don't show ourselves
-            table.insert(user_list, {id = id, data = user})
-        end
-    end
-    table.sort(user_list, function(a, b) return a.data.username < b.data.username end)
-    
-    for i, user in ipairs(user_list) do
-        local device_icon = user.data.device_type == "terminal" and "[T]" or "[C]"
-        print(i .. ". " .. device_icon .. " " .. user.data.username)
-    end
-    
-    print("")
-    print("Enter number to message, R to refresh, B to go back:")
-end
-
 local function drawEmergencyScreen()
     term.clear()
     term.setCursorPos(1, 1)
@@ -748,6 +600,74 @@ local function drawEmergencyScreen()
     end
     
     print("R - Refresh | B - Back")
+end
+
+local function handleEmergencyScreenInput()
+    local input = read()
+    
+    if input:lower() == "b" then
+        current_screen = "main"
+    elseif input:lower() == "r" then
+        -- Refresh by staying on same screen
+        return
+    elseif config.allow_emergency_alerts then
+        if input:lower() == "g" then
+            local success, message = sendSecurityAlert("general")
+            print("")
+            if success then
+                print("GENERAL ALERT SENT!")
+            else
+                print("Failed: " .. message)
+            end
+            sleep(2)
+        elseif input:lower() == "e" then
+            local success, message = sendSecurityAlert("evacuation")
+            print("")
+            if success then
+                print("EVACUATION ALERT SENT!")
+            else
+                print("Failed: " .. message)
+            end
+            sleep(2)
+        elseif input:lower() == "l" then
+            local success, message = sendSecurityAlert("lockdown")
+            print("")
+            if success then
+                print("LOCKDOWN ALERT SENT!")
+            else
+                print("Failed: " .. message)
+            end
+            sleep(2)
+        elseif input:lower() == "c" then
+            local success, message = sendSecurityCancel()
+            print("")
+            if success then
+                print("CANCEL SIGNAL SENT!")
+            else
+                print("Failed: " .. message)
+            end
+            sleep(2)
+        end
+    end
+end
+
+local function drawSettingsScreen()
+    term.clear()
+    term.setCursorPos(1, 1)
+    drawHeader()
+    
+    print("Settings:")
+    print("1. Username: " .. getUsername())
+    print("2. Notifications: " .. (config.notification_sound and "ON" or "OFF"))
+    print("3. Vibrate: " .. (config.vibrate_on_message and "ON" or "OFF"))
+    print("4. Compact Mode: " .. (config.compact_mode and "ON" or "OFF"))
+    print("5. Emergency Alerts: " .. (config.allow_emergency_alerts and "ON" or "OFF"))
+    print("6. Security Password: " .. string.rep("*", #config.security_password))
+    print("7. Clear All Messages")
+    print("8. Export Contacts")
+    print("B. Back")
+    print("")
+    print("Enter choice:")
 end
 
 -- Input handling functions
@@ -896,8 +816,35 @@ local function main()
         elseif current_screen == "messages" then
             drawMessagesScreen()
             handleMessagesScreenInput()
+        elseif current_screen == "emergency" then
+            drawEmergencyScreen()
+            handleEmergencyScreenInput()
         elseif current_screen == "contacts" then
-            drawContactsScreen()
+            term.clear()
+            term.setCursorPos(1, 1)
+            drawHeader()
+            
+            if next(contacts) == nil then
+                print("No contacts saved.")
+                print("")
+                print("A. Add Contact | B. Back")
+            else
+                print("Contacts:")
+                local contact_list = {}
+                for id, contact in pairs(contacts) do
+                    table.insert(contact_list, contact)
+                end
+                table.sort(contact_list, function(a, b) return a.name < b.name end)
+                
+                for i, contact in ipairs(contact_list) do
+                    local online_status = online_users[contact.id] and " (Online)" or " (Offline)"
+                    print(i .. ". " .. contact.name .. online_status)
+                end
+                
+                print("")
+                print("Enter number to message, A to add contact, B to go back:")
+            end
+            
             local input = read()
             if input:lower() == "b" then
                 current_screen = "main"
@@ -906,7 +853,33 @@ local function main()
                 current_screen = "contacts"
             end
         elseif current_screen == "online_users" then
-            drawOnlineUsersScreen()
+            term.clear()
+            term.setCursorPos(1, 1)
+            drawHeader()
+            
+            if next(online_users) == nil then
+                print("No users online.")
+                print("")
+                print("R. Refresh | B. Back")
+            else
+                print("Online Users:")
+                local user_list = {}
+                for id, user in pairs(online_users) do
+                    if id ~= computer_id then  -- Don't show ourselves
+                        table.insert(user_list, {id = id, data = user})
+                    end
+                end
+                table.sort(user_list, function(a, b) return a.data.username < b.data.username end)
+                
+                for i, user in ipairs(user_list) do
+                    local device_icon = user.data.device_type == "terminal" and "[T]" or "[C]"
+                    print(i .. ". " .. device_icon .. " " .. user.data.username)
+                end
+                
+                print("")
+                print("Enter number to message, R to refresh, B to go back:")
+            end
+            
             local input = read()
             if input:lower() == "b" then
                 current_screen = "main"
@@ -918,9 +891,6 @@ local function main()
         elseif current_screen == "new_message" then
             sendNewMessage()
             current_screen = "messages"
-        elseif current_screen == "emergency" then
-            drawEmergencyScreen()
-            handleEmergencyScreenInput()
         elseif current_screen == "settings" then
             drawSettingsScreen()
             local input = read()
@@ -970,8 +940,14 @@ local function main()
             print("Features:")
             print("- Direct messaging")
             print("- Contact management")
-            print("- Server integration")
-            print("- Cross-device sync")
+            print("- Emergency alerts")
+            print("- Security integration")
+            print("- Server connectivity")
+            print("")
+            print("Emergency Features:")
+            print("- Send security alerts")
+            print("- Monitor alarm status")
+            print("- Cancel active alarms")
             print("")
             print("Press any key to return...")
             os.pullEvent("key")
@@ -979,8 +955,6 @@ local function main()
         end
         
         -- Handle background events
-        local timer_id = os.startTimer(0.1)  -- Short timer for background processing
-        
         parallel.waitForAny(
             function()
                 while true do
@@ -988,8 +962,8 @@ local function main()
                     
                     if event == "rednet_message" then
                         local sender_id, message, protocol = param1, param2, param3
-                        if protocol == PHONE_PROTOCOL then
-                            handleMessage(sender_id, message)
+                        if protocol == PHONE_PROTOCOL or protocol == SECURITY_PROTOCOL then
+                            handleMessage(sender_id, message, protocol)
                         end
                     elseif event == "timer" and param1 == presence_timer then
                         broadcastPresence()
@@ -998,7 +972,7 @@ local function main()
                 end
             end,
             function()
-                os.pullEvent("timer")  -- Wait for our short timer
+                sleep(0.1)  -- Short sleep for responsiveness
             end
         )
     end
