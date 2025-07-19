@@ -1,0 +1,606 @@
+-- PoggishTown Security System v2.0
+-- Password-protected alarm system for computers and terminals
+-- Protocol: pogalert (separate from messaging system)
+
+local SECURITY_PROTOCOL = "pogalert"
+local DEFAULT_PASSWORD = "poggishtown2025"  -- Change this for your network
+local CONFIG_FILE = "pogsec_config"
+
+-- Device detection
+local function isWirelessTerminal()
+    if pocket then return true end
+    local label = os.getComputerLabel()
+    if label and (string.find(label:lower(), "terminal") or string.find(label:lower(), "pocket")) then
+        return true
+    end
+    local peripherals = peripheral.getNames()
+    if #peripherals == 0 then return true end
+    local has_only_modem = true
+    for _, side in pairs(peripherals) do
+        if peripheral.getType(side) ~= "modem" then
+            has_only_modem = false
+            break
+        end
+    end
+    return has_only_modem and #peripherals == 1
+end
+
+-- Configuration
+local config = {
+    password = DEFAULT_PASSWORD,
+    heartbeat_interval = 30,
+    max_offline_time = 90,
+    auto_stop_timeout = 300,
+    volume_increment = 0.3,
+    max_volume = 15.0,
+    base_volume = 3.0,
+    enable_relay = true,
+    max_hops = 3,
+    relay_delay = 0.2,
+    update_url = "https://raw.githubusercontent.com/your-repo/poggishtown-security.lua",
+    force_ender_modem = false,  -- Set true to only use ender modems
+    device_name = nil
+}
+
+-- Global state
+local computer_id = os.getComputerID()
+local is_terminal = isWirelessTerminal()
+local modem_side = nil
+local speaker = peripheral.find("speaker")
+local redstone_output_side = "back"
+
+local warning_active = false
+local current_alarm_type = "general"
+local alarm_start_time = nil
+local alarm_triggered_by = nil
+local alarm_note_index = 1
+
+local network_nodes = {}
+local message_history = {}
+local last_heartbeat = 0
+local authenticated = false
+
+-- Security and authentication
+local function hashPassword(password)
+    -- Simple hash function for basic security
+    local hash = 0
+    for i = 1, #password do
+        hash = (hash * 31 + string.byte(password, i)) % 1000000
+    end
+    return tostring(hash)
+end
+
+local function authenticate()
+    if authenticated then return true end
+    
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== PoggishTown Security ===")
+    print("Authentication Required")
+    print("")
+    print("Enter security password:")
+    
+    local input = read("*")  -- Hide password input
+    
+    if input == config.password then
+        authenticated = true
+        print("")
+        print("Authentication successful!")
+        sleep(1)
+        return true
+    else
+        print("")
+        print("Access denied!")
+        sleep(2)
+        return false
+    end
+end
+
+-- Configuration management
+local function loadConfig()
+    if fs.exists(CONFIG_FILE) then
+        local file = fs.open(CONFIG_FILE, "r")
+        if file then
+            local content = file.readAll()
+            file.close()
+            local success, data = pcall(textutils.unserialize, content)
+            if success and data then
+                for key, value in pairs(data) do
+                    if config[key] ~= nil then
+                        config[key] = value
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function saveConfig()
+    local file = fs.open(CONFIG_FILE, "w")
+    if file then
+        file.write(textutils.serialize(config))
+        file.close()
+        return true
+    end
+    return false
+end
+
+-- Modem detection and setup
+local function hasEnderModem()
+    local modem = peripheral.wrap(modem_side)
+    if modem then
+        if modem.isWireless and not modem.isWireless() then
+            return true
+        end
+        if not modem.isWireless then
+            return true
+        end
+    end
+    return false
+end
+
+local function initializeModem()
+    -- For terminals, assume ender modem (built-in wireless)
+    if is_terminal then
+        for _, side in pairs(peripheral.getNames()) do
+            if peripheral.getType(side) == "modem" then
+                modem_side = side
+                rednet.open(side)
+                return true
+            end
+        end
+        return false
+    end
+    
+    -- For computers, check for preferred modem type
+    local found_modems = {}
+    for _, side in pairs(peripheral.getNames()) do
+        if peripheral.getType(side) == "modem" then
+            table.insert(found_modems, side)
+        end
+    end
+    
+    if #found_modems == 0 then
+        return false
+    end
+    
+    -- If force_ender_modem is enabled, only use ender modems
+    if config.force_ender_modem then
+        for _, side in ipairs(found_modems) do
+            local modem = peripheral.wrap(side)
+            if modem and ((modem.isWireless and not modem.isWireless()) or not modem.isWireless) then
+                modem_side = side
+                rednet.open(side)
+                return true
+            end
+        end
+        return false  -- No ender modem found
+    else
+        -- Use any available modem
+        modem_side = found_modems[1]
+        rednet.open(modem_side)
+        return true
+    end
+end
+
+-- Device naming
+local function getDeviceName()
+    if config.device_name then
+        return config.device_name
+    end
+    local label = os.getComputerLabel()
+    if label then
+        return label
+    end
+    return (is_terminal and "Terminal-" or "Computer-") .. computer_id
+end
+
+-- Alarm patterns
+local alarm_patterns = {
+    general = {
+        {note = 3, duration = 0.2},
+        {note = 6, duration = 0.2},
+        {note = 9, duration = 0.4}
+    },
+    evacuation = {
+        {note = 12, duration = 0.15},
+        {note = 15, duration = 0.15},
+        {note = 18, duration = 0.15},
+        {note = 15, duration = 0.15}
+    },
+    lockdown = {
+        {note = 1, duration = 0.5},
+        {note = 1, duration = 0.5},
+        {note = 1, duration = 1.0}
+    }
+}
+
+-- Message handling
+local function generateMessageId()
+    return computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999)
+end
+
+local function isMessageSeen(msg_id)
+    return message_history[msg_id] ~= nil
+end
+
+local function markMessageSeen(msg_id)
+    message_history[msg_id] = os.time()
+    -- Clean up old messages
+    for id, timestamp in pairs(message_history) do
+        if (os.time() - timestamp) > 300 then
+            message_history[id] = nil
+        end
+    end
+end
+
+-- Network broadcasting
+local function broadcastSecure(action, alarm_type, additional_data)
+    local message = {
+        type = "security_alert",
+        action = action,
+        alarm_type = alarm_type or current_alarm_type,
+        source_id = computer_id,
+        source_name = getDeviceName(),
+        origin_id = computer_id,
+        timestamp = os.time(),
+        message_id = generateMessageId(),
+        hops = 0,
+        device_type = is_terminal and "terminal" or "computer",
+        password_hash = hashPassword(config.password)
+    }
+    
+    if additional_data then
+        for key, value in pairs(additional_data) do
+            message[key] = value
+        end
+    end
+    
+    rednet.broadcast(message, SECURITY_PROTOCOL)
+    markMessageSeen(message.message_id)
+end
+
+local function sendHeartbeat()
+    local message = {
+        type = "security_heartbeat",
+        computer_id = computer_id,
+        device_name = getDeviceName(),
+        origin_id = computer_id,
+        timestamp = os.time(),
+        message_id = generateMessageId(),
+        hops = 0,
+        device_type = is_terminal and "terminal" or "computer",
+        alarm_active = warning_active,
+        alarm_type = current_alarm_type,
+        alarm_start_time = alarm_start_time,
+        alarm_triggered_by = alarm_triggered_by,
+        password_hash = hashPassword(config.password)
+    }
+    rednet.broadcast(message, SECURITY_PROTOCOL)
+    markMessageSeen(message.message_id)
+end
+
+-- Alarm control
+local function startAlarm(alarm_type)
+    alarm_type = alarm_type or "general"
+    if not warning_active then
+        warning_active = true
+        current_alarm_type = alarm_type
+        alarm_start_time = os.time()
+        alarm_triggered_by = computer_id
+        alarm_note_index = 1
+        
+        if not is_terminal then
+            redstone.setOutput(redstone_output_side, true)
+        end
+        
+        broadcastSecure("start", alarm_type)
+        print("ALARM STARTED: " .. string.upper(alarm_type))
+    end
+end
+
+local function stopAlarm()
+    if warning_active then
+        warning_active = false
+        alarm_note_index = 1
+        
+        if not is_terminal then
+            redstone.setOutput(redstone_output_side, false)
+        end
+        
+        broadcastSecure("stop", current_alarm_type)
+        print("ALARM STOPPED")
+        alarm_triggered_by = nil
+    end
+end
+
+-- Message handling
+local function handleSecurityMessage(sender_id, message)
+    -- Verify password hash
+    if message.password_hash ~= hashPassword(config.password) then
+        return  -- Ignore unauthorized messages
+    end
+    
+    -- Skip our own messages
+    if message.origin_id == computer_id then
+        return
+    end
+    
+    -- Skip duplicate messages
+    if message.message_id and isMessageSeen(message.message_id) then
+        return
+    end
+    
+    if message.message_id then
+        markMessageSeen(message.message_id)
+    end
+    
+    if message.type == "security_alert" then
+        if message.action == "start" and not warning_active then
+            warning_active = true
+            current_alarm_type = message.alarm_type or "general"
+            alarm_start_time = os.time()
+            alarm_triggered_by = message.source_id
+            alarm_note_index = 1
+            
+            if not is_terminal then
+                redstone.setOutput(redstone_output_side, true)
+            end
+            
+            print("NETWORK ALARM: " .. string.upper(current_alarm_type) .. " by " .. (message.source_name or message.source_id))
+        elseif message.action == "stop" and warning_active then
+            warning_active = false
+            
+            if not is_terminal then
+                redstone.setOutput(redstone_output_side, false)
+            end
+            
+            print("ALARM CANCELLED by " .. (message.source_name or message.source_id))
+            alarm_triggered_by = nil
+        end
+    elseif message.type == "security_heartbeat" then
+        network_nodes[message.computer_id] = {
+            last_seen = os.time(),
+            computer_id = message.computer_id,
+            device_name = message.device_name or tostring(message.computer_id),
+            device_type = message.device_type or "computer",
+            alarm_active = message.alarm_active,
+            alarm_type = message.alarm_type
+        }
+        
+        -- Sync with active alarms from other nodes
+        if message.alarm_active and not warning_active then
+            warning_active = true
+            current_alarm_type = message.alarm_type or "general"
+            alarm_start_time = message.alarm_start_time or os.time()
+            alarm_triggered_by = message.alarm_triggered_by or message.computer_id
+            alarm_note_index = 1
+            
+            if not is_terminal then
+                redstone.setOutput(redstone_output_side, true)
+            end
+            
+            print("JOINING ACTIVE ALARM: " .. string.upper(current_alarm_type))
+        end
+    end
+end
+
+-- User interface
+local function drawScreen()
+    term.clear()
+    term.setCursorPos(1, 1)
+    
+    if is_terminal then
+        print("=== POGGISHTOWN SECURITY ===")
+        print("Terminal: " .. getDeviceName())
+        print("")
+        
+        if warning_active then
+            term.setTextColor(colors.red)
+            print("ALERT: " .. string.upper(current_alarm_type))
+            term.setTextColor(colors.white)
+            if alarm_triggered_by then
+                print("By: " .. (network_nodes[alarm_triggered_by] and network_nodes[alarm_triggered_by].device_name or alarm_triggered_by))
+            end
+            if alarm_start_time then
+                local elapsed = os.time() - alarm_start_time
+                local remaining = config.auto_stop_timeout - elapsed
+                if remaining > 0 then
+                    print("Auto-stop: " .. math.floor(remaining) .. "s")
+                end
+            end
+        else
+            term.setTextColor(colors.green)
+            print("STATUS: Secure")
+            term.setTextColor(colors.white)
+        end
+        
+        print("")
+        print("Controls:")
+        print("G - General | E - Evacuation")
+        print("L - Lockdown | C - Cancel")
+        print("S - Status | Q - Quit")
+        
+    else
+        print("=== POGGISHTOWN SECURITY SYSTEM ===")
+        print("Computer: " .. getDeviceName())
+        print("")
+        
+        if warning_active then
+            term.setTextColor(colors.red)
+            print("!! SECURITY ALERT ACTIVE !!")
+            term.setTextColor(colors.yellow)
+            print("Type: " .. string.upper(current_alarm_type))
+            term.setTextColor(colors.white)
+            if alarm_triggered_by then
+                print("Triggered by: " .. (network_nodes[alarm_triggered_by] and network_nodes[alarm_triggered_by].device_name or alarm_triggered_by))
+            end
+        else
+            term.setTextColor(colors.green)
+            print("SYSTEM STATUS: SECURE")
+            term.setTextColor(colors.white)
+        end
+        
+        print("")
+        print("Controls:")
+        print("G - General Alert")
+        print("E - Evacuation Alert")  
+        print("L - Lockdown Alert")
+        print("C - Cancel All Alerts")
+        print("S - System Status")
+    end
+end
+
+local function showStatus()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== SECURITY STATUS ===")
+    print("Device: " .. getDeviceName() .. " (" .. (is_terminal and "Terminal" or "Computer") .. ")")
+    print("ID: " .. computer_id)
+    print("Modem: " .. (modem_side or "None") .. (hasEnderModem() and " (Ender)" or " (Wireless)"))
+    print("Protocol: " .. SECURITY_PROTOCOL)
+    print("")
+    
+    if warning_active then
+        term.setTextColor(colors.red)
+        print("ACTIVE ALERT: " .. string.upper(current_alarm_type))
+        term.setTextColor(colors.white)
+        print("Started: " .. textutils.formatTime(alarm_start_time or 0, true))
+        print("By: " .. (alarm_triggered_by or "Unknown"))
+    else
+        term.setTextColor(colors.green)
+        print("STATUS: All Clear")
+        term.setTextColor(colors.white)
+    end
+    
+    print("")
+    print("Network Nodes:")
+    local current_time = os.time()
+    local online_count = 0
+    
+    for id, node in pairs(network_nodes) do
+        local status = (current_time - node.last_seen) <= config.max_offline_time
+        if status then online_count = online_count + 1 end
+        
+        print("  " .. node.device_name .. " (" .. node.device_type .. "): " .. 
+              (status and "ONLINE" or "OFFLINE") .. 
+              (node.alarm_active and " [ALARM]" or ""))
+    end
+    
+    print("")
+    print("Total online: " .. online_count .. " nodes")
+    print("")
+    print("Press any key to return...")
+    os.pullEvent("key")
+    drawScreen()
+end
+
+-- Main application
+local function main()
+    loadConfig()
+    
+    if not authenticate() then
+        return
+    end
+    
+    if not initializeModem() then
+        print("ERROR: No suitable modem found!")
+        if config.force_ender_modem then
+            print("Ender modem required but not detected.")
+        end
+        print("Press any key to exit...")
+        os.pullEvent("key")
+        return
+    end
+    
+    print("PoggishTown Security System Starting...")
+    print("Device: " .. getDeviceName())
+    print("Modem: " .. modem_side .. (hasEnderModem() and " (Ender)" or " (Wireless)"))
+    
+    -- Send initial heartbeat
+    sendHeartbeat()
+    sleep(1)
+    
+    drawScreen()
+    
+    -- Main event loop
+    local heartbeat_timer = os.startTimer(config.heartbeat_interval)
+    local alarm_timer = nil
+    
+    while true do
+        local event, param1, param2, param3 = os.pullEvent()
+        
+        if event == "key" then
+            local key = param1
+            if key == keys.g then
+                startAlarm("general")
+                drawScreen()
+            elseif key == keys.e then
+                startAlarm("evacuation")
+                drawScreen()
+            elseif key == keys.l then
+                startAlarm("lockdown")
+                drawScreen()
+            elseif key == keys.c then
+                stopAlarm()
+                drawScreen()
+            elseif key == keys.s then
+                showStatus()
+            elseif key == keys.q and is_terminal then
+                break
+            end
+            
+        elseif event == "rednet_message" then
+            local sender_id, message, protocol = param1, param2, param3
+            if protocol == SECURITY_PROTOCOL then
+                handleSecurityMessage(sender_id, message)
+                drawScreen()
+            end
+            
+        elseif event == "timer" then
+            local timer_id = param1
+            if timer_id == heartbeat_timer then
+                sendHeartbeat()
+                heartbeat_timer = os.startTimer(config.heartbeat_interval)
+            elseif timer_id == alarm_timer then
+                -- Play alarm sound
+                if warning_active and speaker then
+                    local pattern = alarm_patterns[current_alarm_type]
+                    if pattern and pattern[alarm_note_index] then
+                        local volume = config.base_volume + (config.volume_increment * math.min(30, (os.time() - (alarm_start_time or 0))))
+                        volume = math.min(config.max_volume, volume)
+                        
+                        local sound = pattern[alarm_note_index]
+                        speaker.playNote("bass", volume, sound.note)
+                        
+                        alarm_note_index = alarm_note_index + 1
+                        if alarm_note_index > #pattern then
+                            alarm_note_index = 1
+                        end
+                        
+                        alarm_timer = os.startTimer(sound.duration)
+                    end
+                    
+                    -- Auto-stop check
+                    if alarm_start_time and (os.time() - alarm_start_time) > config.auto_stop_timeout then
+                        stopAlarm()
+                        drawScreen()
+                        alarm_timer = nil
+                    end
+                else
+                    alarm_timer = nil
+                end
+            end
+        end
+        
+        -- Start alarm timer when needed
+        if warning_active and not alarm_timer and speaker then
+            alarm_timer = os.startTimer(0.1)
+        end
+    end
+    
+    print("PoggishTown Security System shutting down...")
+end
+
+-- Run the application
+main()
