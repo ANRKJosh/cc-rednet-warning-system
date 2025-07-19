@@ -313,8 +313,11 @@ end
 -- FIXED: Authentication response function using broadcast instead of direct send
 local function sendPasswordResponse(user_id, password_attempt)
     if not config.allow_password_requests then
+        log("Password requests disabled, rejecting auth for user " .. user_id, "WARN")
         return
     end
+    
+    log("Processing password attempt for user " .. user_id .. " with hash " .. password_attempt, "DEBUG")
     
     local is_correct = authenticateUser(user_id, password_attempt)
     
@@ -326,13 +329,15 @@ local function sendPasswordResponse(user_id, password_attempt)
         target_user_id = user_id  -- Add this so only the right client processes it
     }
     
+    log("Preparing auth response: authenticated=" .. tostring(is_correct) .. " target=" .. user_id, "DEBUG")
+    
     local success, error_msg = pcall(function()
         -- FIXED: Change from rednet.send to rednet.broadcast for better reliability
         rednet.broadcast(response, PHONE_PROTOCOL)
     end)
     
     if success then
-        log("Password verification " .. (is_correct and "SUCCESS" or "FAILED") .. " for user " .. user_id .. " (broadcast)")
+        log("Password verification " .. (is_correct and "SUCCESS" or "FAILED") .. " for user " .. user_id .. " (broadcast sent)", "INFO")
     else
         log("Failed to broadcast password response for " .. user_id .. ": " .. tostring(error_msg), "ERROR")
         server_stats.network_errors = server_stats.network_errors + 1
@@ -924,10 +929,14 @@ local function handleMessage(sender_id, message, protocol)
                 sendUserList(sender_id)
                 
             elseif message.type == "security_auth_request" then
+                log("Received auth request from sender " .. sender_id .. " for user " .. (message.user_id or "unknown"), "DEBUG")
                 if message.password_hash and message.user_id then
+                    log("Auth request valid - hash=" .. message.password_hash .. " user=" .. message.user_id, "DEBUG")
                     -- FIXED: Use message.user_id instead of sender_id for proper client identification
                     sendPasswordResponse(message.user_id, message.password_hash)
                     log("Processing auth request from sender " .. sender_id .. " for user " .. message.user_id)
+                else
+                    log("Auth request missing data - hash=" .. tostring(message.password_hash) .. " user=" .. tostring(message.user_id), "WARN")
                 end
                 
             elseif message.type == "modem_detection_request" then
