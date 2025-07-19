@@ -286,9 +286,12 @@ local function sendDirectMessage(to_id, content)
         message_id = computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999)
     }
     
+    addDebugLog("SEND: Broadcasting message to " .. to_id .. ": " .. content)
+    addDebugLog("SEND: Message ID: " .. message.message_id)
+    
     rednet.broadcast(message, PHONE_PROTOCOL)
     addMessage(computer_id, to_id, content, "direct")
-    addDebugLog("Sent message to user " .. to_id)
+    addDebugLog("SEND: Message sent and stored locally")
 end
 
 -- Emergency alerts
@@ -376,7 +379,7 @@ local function processBackgroundMessages()
         return -- No message
     end
     
-    addDebugLog("Received: " .. protocol .. "/" .. (message.type or "unknown") .. " from " .. sender_id)
+    addDebugLog("RCV: " .. protocol .. "/" .. (message.type or "unknown") .. " from " .. sender_id)
     
     if protocol == PHONE_PROTOCOL then
         if message.type == "user_presence" then
@@ -387,13 +390,24 @@ local function processBackgroundMessages()
             }
             
         elseif message.type == "direct_message" then
-            if message.to_id == computer_id and message.from_id ~= computer_id then
-                addDebugLog("MSG: Received direct message from " .. message.from_id .. ": " .. message.content)
-                addMessage(message.from_id, message.to_id, message.content, "direct")
-                print("\n📧 New message from " .. getContactName(message.from_id) .. "!")
-                if config.notification_sound and speaker then
-                    speaker.playNote("pling", 1.0, 10)
+            addDebugLog("MSG: Processing direct_message")
+            addDebugLog("MSG: From " .. message.from_id .. " To " .. message.to_id .. " My ID " .. computer_id)
+            addDebugLog("MSG: Content: " .. message.content)
+            
+            if message.to_id == computer_id then
+                addDebugLog("MSG: Message is for me!")
+                if message.from_id ~= computer_id then
+                    addDebugLog("MSG: Not from myself - adding message")
+                    addMessage(message.from_id, message.to_id, message.content, "direct")
+                    print("\n📧 New message from " .. getContactName(message.from_id) .. "!")
+                    if config.notification_sound and speaker then
+                        speaker.playNote("pling", 1.0, 10)
+                    end
+                else
+                    addDebugLog("MSG: Ignoring - message from myself")
                 end
+            else
+                addDebugLog("MSG: Not for me - ignoring (for " .. message.to_id .. ")")
             end
             
         elseif message.type == "server_announcement" then
@@ -409,6 +423,8 @@ local function processBackgroundMessages()
                     online_users[user_id] = user_data
                 end
             end
+        else
+            addDebugLog("RCV: Unhandled phone message: " .. (message.type or "unknown"))
         end
         
     elseif protocol == SECURITY_PROTOCOL then
@@ -479,6 +495,8 @@ local function processBackgroundMessages()
                 active_alarms[message.computer_id] = nil
             end
         end
+    else
+        addDebugLog("RCV: Unknown protocol: " .. protocol)
     end
 end
 
@@ -512,6 +530,7 @@ local function showMainMenu()
     print("4. Online Users")
     print("5. Emergency Alerts" .. (alarm_count > 0 and " 🚨" or ""))
     print("6. Settings")
+    print("D. Debug Info")
     if is_terminal then
         print("Q. Quit")
     end
@@ -1023,18 +1042,29 @@ local function showDebugInfo()
     print("Device Type: " .. (is_terminal and "Terminal" or "Computer"))
     print("Username: " .. getUsername())
     print("Authenticated: " .. tostring(isAuthenticated()))
-    print("Active Alarms: " .. #active_alarms)
-    print("Online Users: " .. #online_users)
+    print("Active Alarms: " .. tableCount(active_alarms))
+    print("Online Users: " .. tableCount(online_users))
     print("Stored Messages: " .. #messages)
     print("")
     
     print("Recent Debug Log:")
-    for _, entry in ipairs(debug_log) do
-        print("  " .. entry)
+    if #debug_log > 0 then
+        for _, entry in ipairs(debug_log) do
+            print("  " .. entry)
+        end
+    else
+        print("  No debug entries")
     end
     
     print("\nPress any key to return...")
     os.pullEvent("key")
+end
+
+-- Helper function to count table entries
+local function tableCount(t)
+    local count = 0
+    for _ in pairs(t) do count = count + 1 end
+    return count
 end
 
 -- Main program
@@ -1077,6 +1107,8 @@ local function main()
             showEmergencyAlerts()
         elseif choice == "6" then
             showSettings()
+        elseif choice:lower() == "d" then
+            showDebugInfo()
         elseif choice:lower() == "q" and is_terminal then
             break
         end
