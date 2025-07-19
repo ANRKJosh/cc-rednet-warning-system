@@ -269,7 +269,7 @@ local function requestServerAuthentication(password)
         timestamp = os.time()
     }
     
-    addDebugLog("AUTH: Sending request for user " .. computer_id)
+    addDebugLog("AUTH: Sending request for user " .. computer_id .. " with hash " .. hashPassword(password))
     rednet.broadcast(message, PHONE_PROTOCOL)
     
     -- Set pending state
@@ -455,6 +455,11 @@ end
 
 -- Message processing
 local function handleMessage(sender_id, message, protocol)
+    -- Debug: Log ALL messages when auth is pending
+    if auth_request_pending then
+        addDebugLog("MSG: " .. protocol .. "/" .. (message.type or "?") .. " from " .. sender_id)
+    end
+    
     if protocol == PHONE_PROTOCOL then
         -- Add debug for all phone protocol messages when auth is pending
         if auth_request_pending and message.type then
@@ -488,10 +493,11 @@ local function handleMessage(sender_id, message, protocol)
             end
             
         elseif message.type == "security_auth_response" then
+            addDebugLog("AUTH: Got response - target=" .. tostring(message.target_user_id) .. " my_id=" .. computer_id)
+            
             -- Only process if this response is for us
             if message.target_user_id == computer_id then
-                -- Add debug logging for auth responses
-                addDebugLog("AUTH: Received response, authenticated=" .. tostring(message.authenticated))
+                addDebugLog("AUTH: Processing response - authenticated=" .. tostring(message.authenticated))
                 
                 -- Clear pending auth request
                 auth_request_pending = false
@@ -511,7 +517,6 @@ local function handleMessage(sender_id, message, protocol)
                     saveData()
                 end
             else
-                -- This response is for another computer, ignore it
                 addDebugLog("AUTH: Ignoring response for user " .. (message.target_user_id or "unknown"))
             end
             
@@ -708,15 +713,19 @@ local function drawSecurityLoginScreen()
         print("")
         print("Please wait or press B to cancel...")
         
-        -- Limit debug info to just what's needed
+        -- Show more prominent debug info during auth
         print("")
-        print("Debug: Waiting for server response...")
+        print("=== DEBUG INFO ===")
+        print("My ID: " .. computer_id)
+        print("Auth pending: " .. tostring(auth_request_pending))
         if debug_log and #debug_log > 0 then
-            -- Only show the last 2 debug entries to avoid clutter
-            local start_idx = math.max(1, #debug_log - 1)
+            -- Show the last 3 debug entries for better visibility
+            local start_idx = math.max(1, #debug_log - 2)
             for i = start_idx, #debug_log do
                 print("  " .. debug_log[i])
             end
+        else
+            print("  No debug messages yet")
         end
     elseif auth_last_result then
         -- Show result of last attempt
@@ -1002,9 +1011,10 @@ local function drawSettingsScreen()
     print("6. Request Server Config")
     print("7. Clear All Messages")
     print("8. Debug Log")
+    print("9. Test Auth Status")
     
     if isSecurityAuthenticated() then
-        print("9. Security Logout")
+        print("10. Security Logout")
     end
     
     print("B. Back")
@@ -1207,7 +1217,22 @@ local function main()
                 sleep(1)
             elseif input == "8" then
                 showDebugLog()
-            elseif input == "9" and isSecurityAuthenticated() then
+            elseif input == "9" then
+                -- Test auth status
+                print("")
+                print("=== AUTH STATUS TEST ===")
+                print("Computer ID: " .. computer_id)
+                print("Auth pending: " .. tostring(auth_request_pending))
+                print("Auth result: " .. tostring(auth_last_result))
+                print("Is authenticated: " .. tostring(isSecurityAuthenticated()))
+                print("Config auth: " .. tostring(config.security_authenticated))
+                print("Auth expires: " .. tostring(config.security_auth_expires))
+                print("Current time: " .. tostring(os.time()))
+                print("Allow emergency: " .. tostring(config.allow_emergency_alerts))
+                print("")
+                print("Press any key to continue...")
+                os.pullEvent("key")
+            elseif input == "10" and isSecurityAuthenticated() then
                 config.security_authenticated = false
                 config.allow_emergency_alerts = false
                 saveData()
