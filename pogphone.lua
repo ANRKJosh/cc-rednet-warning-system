@@ -569,6 +569,29 @@ local function handleMessage(sender_id, message, protocol)
                 capabilities = message.capabilities or {}
             }
             
+            -- TEST: Check for disguised auth response
+            if message.auth_result_for_user == computer_id then
+                addDebugLog("DISGUISED_AUTH: Received auth result via server_announcement")
+                addDebugLog("DISGUISED_AUTH: Success=" .. tostring(message.auth_success))
+                
+                -- Process the disguised auth response
+                auth_request_pending = false
+                if message.auth_success then
+                    config.security_authenticated = true
+                    config.security_auth_expires = message.auth_expires or (os.time() + 3600)
+                    config.allow_emergency_alerts = true
+                    auth_last_result = "success"
+                    addDebugLog("DISGUISED_AUTH: Authentication successful!")
+                    saveData()
+                else
+                    config.security_authenticated = false
+                    config.allow_emergency_alerts = false
+                    auth_last_result = "failed"
+                    addDebugLog("DISGUISED_AUTH: Authentication failed!")
+                    saveData()
+                end
+            end
+            
         elseif message.type == "user_list_response" then
             if message.users then
                 for user_id, user_data in pairs(message.users) do
@@ -1276,11 +1299,17 @@ local function main()
                 end
             end
         elseif current_screen == "emergency" then
+            if auth_request_pending then
+                addDebugLog("LOOP: Drawing emergency screen with auth pending")
+            end
             drawEmergencyScreen()
             
             -- Don't block if auth is pending - let background processing continue
             if not auth_request_pending then
+                addDebugLog("LOOP: Handling emergency input")
                 handleEmergencyScreenInput()
+            else
+                addDebugLog("LOOP: Skipping input, auth pending")
             end
         elseif current_screen == "settings" then
             drawSettingsScreen()
@@ -1393,10 +1422,22 @@ local function main()
         end
         
         -- Handle background events
+        if auth_request_pending then
+            addDebugLog("LOOP: Entering parallel.waitForAny with auth pending")
+        end
+        
         parallel.waitForAny(
             function()
                 while true do
+                    if auth_request_pending then
+                        addDebugLog("LOOP: Waiting for event in background handler")
+                    end
+                    
                     local event, param1, param2, param3 = os.pullEvent()
+                    
+                    if auth_request_pending then
+                        addDebugLog("LOOP: Got event: " .. event)
+                    end
                     
                     if event == "rednet_message" then
                         local sender_id, message, protocol = param1, param2, param3
