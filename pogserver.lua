@@ -1,4 +1,4 @@
--- PoggishTown Server v2.0 - Enhanced Version
+-- PoggishTown Server v2.1 - Fixed Version
 -- Central server for message relay, user management, and app distribution
 -- Handles both pogphone and pogalert protocols
 
@@ -30,14 +30,14 @@ local config = {
     apps = {
         ["poggishtown-security"] = {
             name = "PoggishTown Security",
-            version = "2.0",
+            version = "2.1",
             url = "https://raw.githubusercontent.com/your-repo/poggishtown-security.lua",
             description = "Password-protected alarm system",
             compatible_devices = {"computer", "terminal"}
         },
         ["poggishtown-phone"] = {
             name = "PoggishTown Phone", 
-            version = "2.0",
+            version = "2.1",
             url = "https://raw.githubusercontent.com/your-repo/poggishtown-phone.lua",
             description = "Modern messaging and communication",
             compatible_devices = {"terminal", "computer"}
@@ -62,7 +62,9 @@ local server_stats = {
     security_alerts = 0,
     password_requests = 0,
     config_pushes = 0,
-    network_errors = 0  -- Enhanced: Track network errors
+    network_errors = 0,
+    messages_stored = 0,
+    messages_delivered = 0
 }
 
 -- Helper function to count table entries
@@ -310,35 +312,33 @@ local function isUserAuthenticated(user_id)
     return false
 end
 
--- FIXED: Authentication response function using broadcast instead of direct send
+-- FIXED: Authentication response function using broadcast
 local function sendPasswordResponse(user_id, password_attempt)
     if not config.allow_password_requests then
         log("Password requests disabled, rejecting auth for user " .. user_id, "WARN")
         return
     end
     
-    log("Processing password attempt for user " .. user_id .. " with hash " .. password_attempt, "DEBUG")
+    log("Processing password attempt for user " .. user_id, "DEBUG")
     
     local is_correct = authenticateUser(user_id, password_attempt)
     
-    -- Use the same simple structure as working server announcements
     local response = {
         type = "security_auth_response",
         authenticated = is_correct,
         target_user_id = user_id,
         server_name = config.server_name,
-        server_id = computer_id,  -- Add server ID like in announcements
-        timestamp = os.time()     -- Add timestamp like in announcements
+        server_id = computer_id,
+        timestamp = os.time()
     }
     
-    -- Only add expires if authenticated
     if is_correct then
         response.expires = os.time() + 3600
     end
     
-    log("Preparing auth response: authenticated=" .. tostring(is_correct) .. " target=" .. user_id, "DEBUG")
+    log("Sending auth response: authenticated=" .. tostring(is_correct) .. " target=" .. user_id, "DEBUG")
     
-    -- Send multiple times to ensure delivery (like announcements)
+    -- Send multiple times to ensure delivery
     for i = 1, 3 do
         local success, error_msg = pcall(function()
             rednet.broadcast(response, PHONE_PROTOCOL)
@@ -354,28 +354,7 @@ local function sendPasswordResponse(user_id, password_attempt)
         sleep(0.1)  -- Small delay between broadcasts
     end
     
-    log("Password verification " .. (is_correct and "SUCCESS" or "FAILED") .. " for user " .. user_id .. " (3 broadcasts sent)", "INFO")
-    
-    -- TEST: Send auth result disguised as a working message type
-    local disguised_response = {
-        type = "server_announcement",  -- Use a type that works
-        server_name = config.server_name,
-        server_id = computer_id,
-        auth_result_for_user = user_id,  -- Hidden auth data
-        auth_success = is_correct,
-        auth_expires = is_correct and (os.time() + 3600) or nil,
-        capabilities = { auth_response = true }
-    }
-    
-    local success, error_msg = pcall(function()
-        rednet.broadcast(disguised_response, PHONE_PROTOCOL)
-    end)
-    
-    if success then
-        log("Disguised auth response sent as server_announcement for user " .. user_id, "DEBUG")
-    else
-        log("Failed to send disguised auth response: " .. tostring(error_msg), "ERROR")
-    end
+    log("Password verification " .. (is_correct and "SUCCESS" or "FAILED") .. " for user " .. user_id, "INFO")
 end
 
 -- Enhanced cleanup function for performance
@@ -493,7 +472,7 @@ local function cleanOfflineUsers()
     end
 end
 
--- Message handling
+-- FIXED: Message handling with consistent structure and proper delivery marking
 local function storeMessage(from_id, to_id, content, msg_type)
     local message = {
         id = #stored_messages + 1,
@@ -506,28 +485,66 @@ local function storeMessage(from_id, to_id, content, msg_type)
     }
     
     table.insert(stored_messages, message)
+    server_stats.messages_stored = server_stats.messages_stored + 1
     saveData()
     return message
 end
 
+-- FIXED: Only mark as delivered AFTER successful send
 local function getStoredMessages(user_id)
     local user_messages = {}
     for _, msg in ipairs(stored_messages) do
         if msg.to_id == user_id and not msg.delivered then
             table.insert(user_messages, msg)
-            msg.delivered = true  -- Mark as delivered
+            -- DON'T mark as delivered yet - wait for successful send
         end
     end
     return user_messages
+end
+
+-- FIXED: Mark messages as delivered only after successful delivery
+local function markMessagesDelivered(message_ids)
+    for _, msg in ipairs(stored_messages) do
+        for _, delivered_id in ipairs(message_ids) do
+            if msg.id == delivered_id then
+                msg.delivered = true
+                server_stats.messages_delivered = server_stats.messages_delivered + 1
+                break
+            end
+        end
+    end
+    saveData()
+end
+
+-- FIXED: Consistent message structure for both real-time and stored messages
+local function createStandardMessage(from_id, to_id, content, message_id, timestamp)
+    local from_user = connected_users[from_id]
+    return {
+        type = "direct_message",
+        from_id = from_id,
+        from_username = from_user and from_user.username or ("User-" .. from_id),
+        to_id = to_id,
+        content = content,
+        timestamp = timestamp or os.time(),
+        message_id = message_id or (from_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999))
+    }
 end
 
 local function relayMessage(original_sender, message)
     -- Relay direct messages to target user
     if message.type == "direct_message" and message.to_id then
         if connected_users[message.to_id] then
-            -- User is online, relay immediately
+            -- User is online, relay immediately with consistent structure
+            local relay_message = createStandardMessage(
+                message.from_id, 
+                message.to_id, 
+                message.content, 
+                message.message_id, 
+                message.timestamp
+            )
+            
             local success, error_msg = pcall(function()
-                rednet.send(message.to_id, message, PHONE_PROTOCOL)
+                rednet.send(message.to_id, relay_message, PHONE_PROTOCOL)
             end)
             
             if success then
@@ -537,7 +554,7 @@ local function relayMessage(original_sender, message)
             else
                 log("Failed to relay message: " .. tostring(error_msg), "ERROR")
                 server_stats.network_errors = server_stats.network_errors + 1
-                -- Still store message for offline delivery
+                -- Store message for offline delivery due to network error
                 storeMessage(message.from_id, message.to_id, message.content, "direct")
                 log("Stored message for offline delivery due to network error")
             end
@@ -623,7 +640,7 @@ local function handleSecurityMessage(sender_id, message)
                 source_name = source_name,
                 start_time = message.timestamp or os.time(),
                 device_type = message.device_type or "unknown",
-                auth_method = auth_method  -- Enhanced: Track how this alarm was authenticated
+                auth_method = auth_method
             }
             log("Active alarm added: " .. sender_id .. " (" .. alarm_type .. ")")
             
@@ -895,44 +912,41 @@ end
 
 -- Enhanced message processing with comprehensive error handling
 local function handleMessage(sender_id, message, protocol)
-    -- DEBUG: Log ALL incoming messages
-    log("INCOMING: " .. protocol .. "/" .. (message.type or "?") .. " from " .. sender_id, "DEBUG")
-    
     -- Wrap entire message handling in error protection
     local success, error_msg = pcall(function()
         if protocol == PHONE_PROTOCOL then
             if message.type == "user_presence" then
                 updateUserPresence(message.user_id, message.username, message.device_type)
                 
-                -- Send stored messages with enhanced error handling
+                -- FIXED: Send stored messages with consistent structure and proper delivery tracking
                 local stored = getStoredMessages(message.user_id)
-                local delivered_count = 0
+                local delivered_ids = {}
                 
                 for _, stored_msg in ipairs(stored) do
-                    local delivery_msg = {
-                        type = "direct_message",
-                        from_id = stored_msg.from_id,
-                        from_username = connected_users[stored_msg.from_id] and connected_users[stored_msg.from_id].username or ("User-" .. stored_msg.from_id),
-                        to_id = stored_msg.to_id,
-                        content = stored_msg.content,
-                        timestamp = stored_msg.timestamp,
-                        message_id = "stored_" .. stored_msg.id
-                    }
+                    local delivery_msg = createStandardMessage(
+                        stored_msg.from_id,
+                        stored_msg.to_id,
+                        stored_msg.content,
+                        "stored_" .. stored_msg.id,
+                        stored_msg.timestamp
+                    )
                     
                     local success, error_msg = pcall(function()
                         rednet.send(message.user_id, delivery_msg, PHONE_PROTOCOL)
                     end)
                     
                     if success then
-                        delivered_count = delivered_count + 1
+                        table.insert(delivered_ids, stored_msg.id)
                     else
                         log("Failed to deliver stored message to " .. message.user_id .. ": " .. tostring(error_msg), "WARN")
                         server_stats.network_errors = server_stats.network_errors + 1
                     end
                 end
                 
-                if delivered_count > 0 then
-                    log("Delivered " .. delivered_count .. "/" .. #stored .. " stored messages to " .. message.username)
+                -- Only mark as delivered AFTER successful send
+                if #delivered_ids > 0 then
+                    markMessagesDelivered(delivered_ids)
+                    log("Delivered " .. #delivered_ids .. "/" .. #stored .. " stored messages to " .. message.username)
                 end
                 
                 -- Enhanced: Send security status to authenticated users
@@ -969,7 +983,6 @@ local function handleMessage(sender_id, message, protocol)
                 log("Received auth request from sender " .. sender_id .. " for user " .. (message.user_id or "unknown"), "DEBUG")
                 if message.password_hash and message.user_id then
                     log("Auth request valid - hash=" .. message.password_hash .. " user=" .. message.user_id, "DEBUG")
-                    -- FIXED: Use message.user_id instead of sender_id for proper client identification
                     sendPasswordResponse(message.user_id, message.password_hash)
                     log("Processing auth request from sender " .. sender_id .. " for user " .. message.user_id)
                 else
@@ -987,7 +1000,7 @@ local function handleMessage(sender_id, message, protocol)
                 }
                 
                 local success, error_msg = pcall(function()
-                    rednet.broadcast(response, PHONE_PROTOCOL)  -- Changed to broadcast for consistency
+                    rednet.broadcast(response, PHONE_PROTOCOL)
                 end)
                 
                 if success then
@@ -1039,7 +1052,7 @@ local function drawServerStatus()
     term.clear()
     term.setCursorPos(1, 1)
     
-    print("=== POGGISHTOWN SERVER ===")
+    print("=== POGGISHTOWN SERVER v2.1 ===")
     print("Server: " .. string.sub(config.server_name, 1, 20))
     print("ID: " .. computer_id .. " | Up: " .. math.floor((os.time() - server_stats.uptime_start) / 60) .. "m")
     print("")
@@ -1088,11 +1101,14 @@ local function drawServerStatus()
     end
     print("")
     
-    -- Enhanced statistics
+    -- Enhanced statistics with color coding
     print("Stats:")
+    term.setTextColor(colors.lightBlue)
     print("  Users: " .. tableCount(connected_users) .. " | Messages: " .. server_stats.messages_relayed)
+    print("  Stored: " .. server_stats.messages_stored .. " | Delivered: " .. server_stats.messages_delivered)
     print("  Alerts: " .. server_stats.security_alerts .. " | Auth: " .. server_stats.password_requests)
-    print("  Nodes: " .. tableCount(security_nodes) .. " | Stored: " .. #stored_messages)
+    print("  Nodes: " .. tableCount(security_nodes) .. " | Pending: " .. #stored_messages)
+    term.setTextColor(colors.white)
     print("")
     
     -- Services status
@@ -1106,7 +1122,7 @@ local function drawServerStatus()
     term.setTextColor(colors.white)
     print("")
     
-    -- Enhanced user display
+    -- Enhanced user display with color coding
     local user_count = tableCount(connected_users)
     if user_count > 0 then
         print("Users (" .. user_count .. "):")
@@ -1115,18 +1131,32 @@ local function drawServerStatus()
             if shown < 3 then
                 local name = string.sub(user_data.username, 1, 12)
                 local device = string.sub(user_data.device_type, 1, 1):upper()
-                local auth_status = isUserAuthenticated(user_id) and "*" or ""
+                local is_authenticated = isUserAuthenticated(user_id)
                 local time_ago = os.time() - user_data.last_seen
                 local time_str = time_ago < 60 and (time_ago .. "s") or (math.floor(time_ago/60) .. "m")
-                print("  [" .. device .. "] " .. name .. auth_status .. " (" .. time_str .. ")")
+                
+                -- Color code device type
+                if user_data.device_type == "terminal" then
+                    term.setTextColor(colors.cyan)
+                else
+                    term.setTextColor(colors.blue)
+                end
+                
+                local auth_indicator = is_authenticated and " [AUTH]" or ""
+                print("  [" .. device .. "] " .. name .. auth_indicator .. " (" .. time_str .. ")")
+                term.setTextColor(colors.white)
                 shown = shown + 1
             end
         end
         if user_count > 3 then
+            term.setTextColor(colors.lightGray)
             print("  +" .. (user_count - 3) .. " more")
+            term.setTextColor(colors.white)
         end
     else
+        term.setTextColor(colors.gray)
         print("No users online")
+        term.setTextColor(colors.white)
     end
     
     print("")
@@ -1243,6 +1273,8 @@ local function showDebugInfo()
     print("Server Statistics:")
     print("  Uptime: " .. math.floor((os.time() - server_stats.uptime_start) / 60) .. " minutes")
     print("  Messages relayed: " .. server_stats.messages_relayed)
+    print("  Messages stored: " .. server_stats.messages_stored)
+    print("  Messages delivered: " .. server_stats.messages_delivered)
     print("  Security alerts: " .. server_stats.security_alerts)
     print("  Auth requests: " .. server_stats.password_requests)
     print("  Config pushes: " .. server_stats.config_pushes)
@@ -1414,7 +1446,7 @@ end
 
 -- Enhanced main server loop
 local function main()
-    print("=== PoggishTown Server Starting ===")
+    print("=== PoggishTown Server v2.1 Starting ===")
     
     loadData()
     
@@ -1427,7 +1459,7 @@ local function main()
         return
     end
     
-    log("PoggishTown Server starting...")
+    log("PoggishTown Server v2.1 starting...")
     log("Server: " .. config.server_name .. " (ID: " .. computer_id .. ")")
     log("Modem: " .. modem_side .. (hasEnderModem() and " (Ender)" or " (Wireless)"))
     log("Services: " .. 
@@ -1539,7 +1571,7 @@ local function main()
         log("Failed to send shutdown announcement: " .. tostring(error_msg), "ERROR")
     end
     
-    print("PoggishTown Server shutdown complete.")
+    print("PoggishTown Server v2.1 shutdown complete.")
 end
 
 -- Run the server
