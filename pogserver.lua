@@ -28,19 +28,38 @@ local config = {
     allow_remote_config = true,            -- Allow pushing config to devices
     modem_detection_override = {},         -- Per-device modem type overrides
     apps = {
-        ["poggishtown-security"] = {
-            name = "PoggishTown Security",
-            version = "2.1",
-            url = "https://raw.githubusercontent.com/your-repo/poggishtown-security.lua",
-            description = "Password-protected alarm system",
-            compatible_devices = {"computer", "terminal"}
-        },
         ["poggishtown-phone"] = {
             name = "PoggishTown Phone", 
             version = "2.1",
             url = "https://raw.githubusercontent.com/your-repo/poggishtown-phone.lua",
-            description = "Modern messaging and communication",
-            compatible_devices = {"terminal", "computer"}
+            description = "Modern messaging and communication system",
+            compatible_devices = {"terminal"},
+            device_restrictions = {"terminal"},
+            requires_auth = false,
+            category = "communication",
+            install_name = "pogphone"
+        },
+        ["poggishtown-admin"] = {
+            name = "PoggishTown Admin",
+            version = "2.1",
+            url = "https://raw.githubusercontent.com/your-repo/poggishtown-admin.lua", 
+            description = "Server administration and network monitoring tools",
+            compatible_devices = {"terminal"},
+            device_restrictions = {"terminal"},
+            requires_auth = true,
+            category = "admin",
+            install_name = "pogadmin"
+        },
+        ["poggishtown-security"] = {
+            name = "PoggishTown Security",
+            version = "2.1", 
+            url = "https://raw.githubusercontent.com/your-repo/poggishtown-security.lua",
+            description = "Dedicated alarm and security monitoring system",
+            compatible_devices = {"computer"},
+            device_restrictions = {"computer"},
+            requires_auth = true,
+            category = "security",
+            install_name = "pogsecurity"
         }
     }
 }
@@ -800,25 +819,42 @@ local function handleSecurityMessage(sender_id, message)
     end
 end
 
--- App repository
-local function handleAppRequest(sender_id, message)
-    if not config.app_repository_enabled then return end
+-- Admin request handling
+local function handleAdminRequest(sender_id, message)
+    local user_data = connected_users[sender_id]
+    if not user_data then return end
     
-    if message.type == "app_list_request" then
-        local app_list = {}
-        for app_id, app_data in pairs(config.apps) do
-            app_list[app_id] = {
-                name = app_data.name,
-                version = app_data.version,
-                description = app_data.description,
-                compatible_devices = app_data.compatible_devices
-            }
-        end
-        
+    -- Check if sender is authenticated for admin access
+    if not isUserAuthenticated(sender_id) then
+        log("Unauthorized admin request from " .. sender_id, "WARN")
+        return
+    end
+    
+    if message.type == "admin_status_request" then
         local response = {
-            type = "app_list_response",
-            apps = app_list,
-            server_name = config.server_name
+            type = "admin_status_response",
+            server_name = config.server_name,
+            server_id = computer_id,
+            stats = {
+                uptime = os.time() - server_stats.uptime_start,
+                messages_relayed = server_stats.messages_relayed,
+                messages_stored = server_stats.messages_stored,
+                messages_delivered = server_stats.messages_delivered,
+                security_alerts = server_stats.security_alerts,
+                password_requests = server_stats.password_requests,
+                network_errors = server_stats.network_errors,
+                connected_users = tableCount(connected_users),
+                authenticated_users = tableCount(authenticated_users),
+                active_alarms = tableCount(active_security_alarms),
+                security_nodes = tableCount(security_nodes),
+                stored_messages = #stored_messages
+            },
+            capabilities = {
+                message_relay = config.auto_relay_messages,
+                app_repository = config.app_repository_enabled,
+                security_monitoring = config.security_monitoring
+            },
+            timestamp = os.time()
         }
         
         local success, error_msg = pcall(function()
@@ -826,7 +862,225 @@ local function handleAppRequest(sender_id, message)
         end)
         
         if success then
-            log("Sent app list to " .. sender_id)
+            log("Sent admin status to " .. sender_id)
+        else
+            log("Failed to send admin status to " .. sender_id .. ": " .. tostring(error_msg), "ERROR")
+        end
+    end
+end
+
+local function handleAdminCommand(sender_id, message)
+    local user_data = connected_users[sender_id]
+    if not user_data then return end
+    
+    -- Check if sender is authenticated for admin access
+    if not isUserAuthenticated(sender_id) then
+        log("Unauthorized admin command from " .. sender_id .. ": " .. (message.command or "unknown"), "WARN")
+        return
+    end
+    
+    local command = message.command
+    local admin_user = message.admin_user or "Unknown"
+    
+    log("Admin command received from " .. admin_user .. " (" .. sender_id .. "): " .. command, "INFO")
+    
+    if command == "status_request" then
+        -- Send detailed status
+        handleAdminRequest(sender_id, {type = "admin_status_request"})
+        
+    elseif command == "emergency_shutdown" then
+        log("EMERGENCY SHUTDOWN requested by admin " .. admin_user, "ALERT")
+        
+        -- Send shutdown notice to all users
+        local shutdown_notice = {
+            type = "server_shutdown",
+            reason = "Emergency shutdown by admin",
+            admin_user = admin_user,
+            timestamp = os.time()
+        }
+        
+        local success, error_msg = pcall(function()
+            rednet.broadcast(shutdown_notice, PHONE_PROTOCOL)
+        end)
+        
+        -- Graceful shutdown
+        saveData()
+        
+        -- Send confirmation to admin
+        local confirm = {
+            type = "admin_command_response",
+            command = command,
+            status = "executed",
+            message = "Server shutting down..."
+        }
+        
+        pcall(function()
+            rednet.send(sender_id, confirm, PHONE_PROTOCOL)
+        end)
+        
+        print("EMERGENCY SHUTDOWN initiated by admin: " .. admin_user)
+        sleep(2)
+        os.shutdown()
+        
+    elseif command == "clear_logs" then
+        -- Clear log file
+        if fs.exists(LOGS_FILE) then
+            fs.delete(LOGS_FILE)
+            log("Server logs cleared by admin " .. admin_user, "INFO")
+        end
+        
+        local confirm = {
+            type = "admin_command_response", 
+            command = command,
+            status = "executed",
+            message = "Server logs cleared"
+        }
+        
+        pcall(function()
+            rednet.send(sender_id, confirm, PHONE_PROTOCOL)
+        end)
+        
+    elseif command == "restart_services" then
+        -- Restart key services
+        log("Service restart requested by admin " .. admin_user, "INFO")
+        
+        -- Reset statistics
+        server_stats.network_errors = 0
+        
+        -- Clean up stale data
+        cleanupStaleData()
+        
+        local confirm = {
+            type = "admin_command_response",
+            command = command,
+            status = "executed", 
+            message = "Services restarted"
+        }
+        
+        pcall(function()
+            rednet.send(sender_id, confirm, PHONE_PROTOCOL)
+        end)
+        
+    else
+        log("Unknown admin command: " .. command .. " from " .. admin_user, "WARN")
+        
+        local error_response = {
+            type = "admin_command_response",
+            command = command,
+            status = "error",
+            message = "Unknown command"
+        }
+        
+        pcall(function()
+            rednet.send(sender_id, error_response, PHONE_PROTOCOL)
+        end)
+    end
+end
+
+local function relayAdminBroadcast(sender_id, message)
+    local user_data = connected_users[sender_id]
+    if not user_data then return end
+    
+    -- Check if sender is authenticated for admin access
+    if not isUserAuthenticated(sender_id) then
+        log("Unauthorized admin broadcast from " .. sender_id, "WARN")
+        return
+    end
+    
+    local admin_user = message.from_admin or "Unknown Admin"
+    log("Admin broadcast from " .. admin_user .. ": " .. (message.message or ""), "INFO")
+    
+    -- Relay to all connected users except sender
+    local broadcast_count = 0
+    for user_id, _ in pairs(connected_users) do
+        if user_id ~= sender_id then
+            local success, error_msg = pcall(function()
+                rednet.send(user_id, message, PHONE_PROTOCOL)
+            end)
+            
+            if success then
+                broadcast_count = broadcast_count + 1
+            else
+                server_stats.network_errors = server_stats.network_errors + 1
+            end
+        end
+    end
+    
+    if broadcast_count > 0 then
+        log("Admin broadcast relayed to " .. broadcast_count .. " users")
+    end
+end
+
+-- Enhanced app repository with device restrictions
+local function handleAppRequest(sender_id, message)
+    if not config.app_repository_enabled then return end
+    
+    local user_data = connected_users[sender_id]
+    if not user_data then
+        log("App request from unknown user " .. sender_id, "WARN")
+        return
+    end
+    
+    local user_device_type = user_data.device_type
+    local user_authenticated = isUserAuthenticated(sender_id)
+    
+    if message.type == "app_list_request" then
+        local filtered_apps = {}
+        
+        for app_id, app_data in pairs(config.apps) do
+            -- Check device compatibility
+            local device_compatible = false
+            for _, device in ipairs(app_data.compatible_devices) do
+                if device == user_device_type then
+                    device_compatible = true
+                    break
+                end
+            end
+            
+            -- Check device restrictions
+            local device_allowed = true
+            if app_data.device_restrictions then
+                device_allowed = false
+                for _, device in ipairs(app_data.device_restrictions) do
+                    if device == user_device_type then
+                        device_allowed = true
+                        break
+                    end
+                end
+            end
+            
+            -- Check authentication requirements
+            local auth_ok = true
+            if app_data.requires_auth and not user_authenticated then
+                auth_ok = false
+            end
+            
+            -- Only include if all checks pass
+            if device_compatible and device_allowed and auth_ok then
+                filtered_apps[app_id] = {
+                    name = app_data.name,
+                    version = app_data.version,
+                    description = app_data.description,
+                    category = app_data.category or "general",
+                    install_name = app_data.install_name or app_id
+                }
+            end
+        end
+        
+        local response = {
+            type = "app_list_response",
+            apps = filtered_apps,
+            server_name = config.server_name,
+            user_device_type = user_device_type,
+            user_authenticated = user_authenticated
+        }
+        
+        local success, error_msg = pcall(function()
+            rednet.send(sender_id, response, PHONE_PROTOCOL)
+        end)
+        
+        if success then
+            log("Sent filtered app list to " .. sender_id .. " (" .. tableCount(filtered_apps) .. " apps)")
         else
             log("Failed to send app list to " .. sender_id .. ": " .. tostring(error_msg), "ERROR")
             server_stats.network_errors = server_stats.network_errors + 1
@@ -834,26 +1088,160 @@ local function handleAppRequest(sender_id, message)
         
     elseif message.type == "app_download_request" then
         local app_id = message.app_id
-        if config.apps[app_id] then
-            local response = {
-                type = "app_download_response",
+        local app_data = config.apps[app_id]
+        
+        if not app_data then
+            log("App download request for unknown app: " .. app_id, "WARN")
+            return
+        end
+        
+        -- Verify user can access this app (same checks as above)
+        local device_compatible = false
+        for _, device in ipairs(app_data.compatible_devices) do
+            if device == user_device_type then
+                device_compatible = true
+                break
+            end
+        end
+        
+        local device_allowed = true
+        if app_data.device_restrictions then
+            device_allowed = false
+            for _, device in ipairs(app_data.device_restrictions) do
+                if device == user_device_type then
+                    device_allowed = true
+                    break
+                end
+            end
+        end
+        
+        local auth_ok = true
+        if app_data.requires_auth and not user_authenticated then
+            auth_ok = false
+        end
+        
+        if not (device_compatible and device_allowed and auth_ok) then
+            log("Unauthorized app download request from " .. sender_id .. " for " .. app_id, "WARN")
+            
+            local error_response = {
+                type = "app_download_error",
                 app_id = app_id,
-                download_url = config.apps[app_id].url,
-                name = config.apps[app_id].name,
-                version = config.apps[app_id].version
+                error = "Access denied",
+                reason = not auth_ok and "authentication_required" or "device_incompatible"
             }
             
             local success, error_msg = pcall(function()
-                rednet.send(sender_id, response, PHONE_PROTOCOL)
+                rednet.send(sender_id, error_response, PHONE_PROTOCOL)
+            end)
+            return
+        end
+        
+        local response = {
+            type = "app_download_response",
+            app_id = app_id,
+            download_url = app_data.url,
+            name = app_data.name,
+            version = app_data.version,
+            install_name = app_data.install_name or app_id,
+            description = app_data.description
+        }
+        
+        local success, error_msg = pcall(function()
+            rednet.send(sender_id, response, PHONE_PROTOCOL)
+        end)
+        
+        if success then
+            log("Sent download info for " .. app_id .. " to " .. sender_id)
+        else
+            log("Failed to send download info to " .. sender_id .. ": " .. tostring(error_msg), "ERROR")
+            server_stats.network_errors = server_stats.network_errors + 1
+        end
+        
+    elseif message.type == "app_update_check" then
+        -- Handle update checking
+        local installed_apps = message.installed_apps or {}
+        local updates_available = {}
+        
+        for app_id, installed_version in pairs(installed_apps) do
+            local app_data = config.apps[app_id]
+            if app_data and app_data.version ~= installed_version then
+                -- Check if user can still access this app
+                local device_compatible = false
+                for _, device in ipairs(app_data.compatible_devices) do
+                    if device == user_device_type then
+                        device_compatible = true
+                        break
+                    end
+                end
+                
+                if device_compatible then
+                    updates_available[app_id] = {
+                        current_version = installed_version,
+                        new_version = app_data.version,
+                        name = app_data.name
+                    }
+                end
+            end
+        end
+        
+        local response = {
+            type = "app_update_response",
+            updates_available = updates_available,
+            server_name = config.server_name
+        }
+        
+        local success, error_msg = pcall(function()
+            rednet.send(sender_id, response, PHONE_PROTOCOL)
+        end)
+        
+        if success and next(updates_available) then
+            log("Sent update notifications to " .. sender_id .. " (" .. tableCount(updates_available) .. " updates)")
+        end
+    end
+end
+
+-- Broadcast update notifications to all users
+local function broadcastAppUpdates(app_id)
+    if not config.app_repository_enabled then return end
+    
+    local app_data = config.apps[app_id]
+    if not app_data then return end
+    
+    local notification = {
+        type = "app_update_notification",
+        app_id = app_id,
+        app_name = app_data.name,
+        new_version = app_data.version,
+        description = app_data.description,
+        server_name = config.server_name
+    }
+    
+    local notified_count = 0
+    for user_id, user_data in pairs(connected_users) do
+        -- Check if user's device is compatible with this app
+        local device_compatible = false
+        for _, device in ipairs(app_data.compatible_devices) do
+            if device == user_data.device_type then
+                device_compatible = true
+                break
+            end
+        end
+        
+        if device_compatible then
+            local success, error_msg = pcall(function()
+                rednet.send(user_id, notification, PHONE_PROTOCOL)
             end)
             
             if success then
-                log("Sent download info for " .. app_id .. " to " .. sender_id)
+                notified_count = notified_count + 1
             else
-                log("Failed to send download info to " .. sender_id .. ": " .. tostring(error_msg), "ERROR")
                 server_stats.network_errors = server_stats.network_errors + 1
             end
         end
+    end
+    
+    if notified_count > 0 then
+        log("Broadcast update notification for " .. app_data.name .. " to " .. notified_count .. " users")
     end
 end
 
@@ -1032,8 +1420,41 @@ local function handleMessage(sender_id, message, protocol)
                     server_stats.network_errors = server_stats.network_errors + 1
                 end
                 
+            elseif message.type == "app_list_request" then
+                local user_data = connected_users[sender_id]
+                if user_data then
+                    handleAppRequest(sender_id, message)
+                end
+                
+            elseif message.type == "app_download_request" then
+                local user_data = connected_users[sender_id]
+                if user_data then
+                    handleAppRequest(sender_id, message)
+                end
+                
+            elseif message.type == "app_update_check" then
+                local user_data = connected_users[sender_id]
+                if user_data then
+                    handleAppRequest(sender_id, message)
+                end
+                
+            elseif message.type == "admin_status_request" then
+                -- Handle admin status requests
+                handleAdminRequest(sender_id, message)
+                
+            elseif message.type == "admin_command" then
+                -- Handle admin commands
+                handleAdminCommand(sender_id, message)
+                
+            elseif message.type == "admin_broadcast" then
+                -- Relay admin broadcasts to all users
+                relayAdminBroadcast(sender_id, message)
+                
             else
-                handleAppRequest(sender_id, message)
+                -- Check if it's an unhandled app-related message
+                if message.type and string.find(message.type, "app_") then
+                    handleAppRequest(sender_id, message)
+                end
             end
             
         elseif protocol == SECURITY_PROTOCOL then
@@ -1161,7 +1582,7 @@ local function drawServerStatus()
     
     print("")
     print("Keys: S-Status L-Logs U-Users D-Debug")
-    print("      A-Apps C-Config Q-Quit")
+    print("      A-Apps C-Config R-Repository Q-Quit")
 end
 
 local function showDetailedLogs()
@@ -1307,23 +1728,371 @@ local function showAppRepository()
     print("=== APP REPOSITORY ===")
     
     if not config.app_repository_enabled then
+        term.setTextColor(colors.red)
         print("App repository is DISABLED")
+        term.setTextColor(colors.white)
+        print("")
+        print("Enable in Configuration menu first")
     else
         print("Available Apps:")
         print("")
         
+        local app_count = 0
         for app_id, app_data in pairs(config.apps) do
+            app_count = app_count + 1
+            term.setTextColor(colors.yellow)
             print("ID: " .. app_id)
+            term.setTextColor(colors.white)
             print("Name: " .. app_data.name .. " v" .. app_data.version)
             print("Description: " .. app_data.description)
-            print("Compatible: " .. table.concat(app_data.compatible_devices, ", "))
-            print("URL: " .. app_data.url)
+            print("Devices: " .. table.concat(app_data.compatible_devices, ", "))
+            if app_data.device_restrictions then
+                term.setTextColor(colors.red)
+                print("Restricted to: " .. table.concat(app_data.device_restrictions, ", "))
+                term.setTextColor(colors.white)
+            end
+            if app_data.requires_auth then
+                term.setTextColor(colors.yellow)
+                print("Requires authentication")
+                term.setTextColor(colors.white)
+            end
+            print("Install name: " .. (app_data.install_name or app_id))
+            print("URL: " .. string.sub(app_data.url, 1, 50) .. (string.len(app_data.url) > 50 and "..." or ""))
             print("")
+        end
+        
+        if app_count == 0 then
+            term.setTextColor(colors.gray)
+            print("No apps configured")
+            term.setTextColor(colors.white)
+        end
+        
+        print("Management:")
+        print("A - Add App | E - Edit App | D - Delete App")
+        print("U - Push Update Notification | R - Reload from File")
+    end
+    
+    print("B - Back")
+    print("")
+    print("Enter choice:")
+    
+    local input = read()
+    
+    if input:lower() == "b" then
+        return
+    elseif input:lower() == "a" and config.app_repository_enabled then
+        -- Add new app
+        addNewApp()
+    elseif input:lower() == "e" and config.app_repository_enabled then
+        -- Edit existing app
+        editApp()
+    elseif input:lower() == "d" and config.app_repository_enabled then
+        -- Delete app
+        deleteApp()
+    elseif input:lower() == "u" and config.app_repository_enabled then
+        -- Push update notification
+        pushUpdateNotification()
+    elseif input:lower() == "r" and config.app_repository_enabled then
+        -- Reload apps from external config
+        print("Feature not implemented yet")
+        sleep(1)
+    end
+end
+
+local function addNewApp()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== ADD NEW APP ===")
+    
+    print("Enter app ID (lowercase, no spaces):")
+    local app_id = read()
+    if not app_id or app_id == "" or config.apps[app_id] then
+        print("Invalid or existing app ID")
+        sleep(1)
+        return
+    end
+    
+    print("Enter app name:")
+    local app_name = read()
+    if not app_name or app_name == "" then
+        print("Name required")
+        sleep(1)
+        return
+    end
+    
+    print("Enter version (e.g. 1.0):")
+    local version = read()
+    if not version or version == "" then
+        version = "1.0"
+    end
+    
+    print("Enter description:")
+    local description = read()
+    if not description or description == "" then
+        description = "No description"
+    end
+    
+    print("Enter download URL:")
+    local url = read()
+    if not url or url == "" then
+        print("URL required")
+        sleep(1)
+        return
+    end
+    
+    print("Compatible devices (comma separated - computer,terminal):")
+    local devices_str = read()
+    local compatible_devices = {}
+    if devices_str and devices_str ~= "" then
+        for device in devices_str:gmatch("[^,]+") do
+            table.insert(compatible_devices, device:gsub("^%s*(.-)%s*$", "%1"))
+        end
+    else
+        compatible_devices = {"computer", "terminal"}
+    end
+    
+    print("Device restrictions (leave empty for none, or computer,terminal):")
+    local restrictions_str = read()
+    local device_restrictions = nil
+    if restrictions_str and restrictions_str ~= "" then
+        device_restrictions = {}
+        for device in restrictions_str:gmatch("[^,]+") do
+            table.insert(device_restrictions, device:gsub("^%s*(.-)%s*$", "%1"))
         end
     end
     
-    print("Press any key to return...")
-    os.pullEvent("key")
+    print("Requires authentication? (y/N):")
+    local auth_input = read()
+    local requires_auth = auth_input:lower() == "y"
+    
+    print("Install filename (leave empty for app ID):")
+    local install_name = read()
+    if install_name == "" then
+        install_name = app_id
+    end
+    
+    print("Category (communication/security/admin/general):")
+    local category = read()
+    if category == "" then
+        category = "general"
+    end
+    
+    -- Add the app
+    config.apps[app_id] = {
+        name = app_name,
+        version = version,
+        url = url,
+        description = description,
+        compatible_devices = compatible_devices,
+        device_restrictions = device_restrictions,
+        requires_auth = requires_auth,
+        category = category,
+        install_name = install_name
+    }
+    
+    saveData()
+    
+    term.setTextColor(colors.green)
+    print("\nApp added successfully!")
+    term.setTextColor(colors.white)
+    print("Push update notification? (y/N)")
+    
+    local push_update = read()
+    if push_update:lower() == "y" then
+        broadcastAppUpdates(app_id)
+        print("Update notification sent!")
+    end
+    
+    sleep(2)
+end
+
+local function editApp()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== EDIT APP ===")
+    
+    local app_list = {}
+    for app_id, _ in pairs(config.apps) do
+        table.insert(app_list, app_id)
+    end
+    
+    if #app_list == 0 then
+        print("No apps to edit")
+        sleep(1)
+        return
+    end
+    
+    print("Available apps:")
+    for i, app_id in ipairs(app_list) do
+        print(i .. ". " .. app_id .. " (" .. config.apps[app_id].name .. ")")
+    end
+    
+    print("\nEnter app number:")
+    local choice = tonumber(read())
+    
+    if not choice or choice < 1 or choice > #app_list then
+        print("Invalid choice")
+        sleep(1)
+        return
+    end
+    
+    local app_id = app_list[choice]
+    local app_data = config.apps[app_id]
+    
+    print("\nEditing: " .. app_data.name)
+    print("1. Name: " .. app_data.name)
+    print("2. Version: " .. app_data.version)
+    print("3. Description: " .. app_data.description)
+    print("4. URL: " .. string.sub(app_data.url, 1, 40) .. "...")
+    print("5. Compatible devices: " .. table.concat(app_data.compatible_devices, ", "))
+    print("6. Restrictions: " .. (app_data.device_restrictions and table.concat(app_data.device_restrictions, ", ") or "None"))
+    print("7. Requires auth: " .. (app_data.requires_auth and "Yes" or "No"))
+    print("8. Install name: " .. app_data.install_name)
+    print("9. Category: " .. app_data.category)
+    
+    print("\nEnter field number to edit (or Enter to finish):")
+    local field = read()
+    
+    if field == "1" then
+        print("New name:")
+        local new_name = read()
+        if new_name ~= "" then app_data.name = new_name end
+    elseif field == "2" then
+        print("New version:")
+        local new_version = read()
+        if new_version ~= "" then app_data.version = new_version end
+    elseif field == "3" then
+        print("New description:")
+        local new_desc = read()
+        if new_desc ~= "" then app_data.description = new_desc end
+    elseif field == "4" then
+        print("New URL:")
+        local new_url = read()
+        if new_url ~= "" then app_data.url = new_url end
+    elseif field == "7" then
+        print("Requires authentication? (y/N):")
+        local auth_input = read()
+        app_data.requires_auth = auth_input:lower() == "y"
+    elseif field == "8" then
+        print("New install name:")
+        local new_install = read()
+        if new_install ~= "" then app_data.install_name = new_install end
+    elseif field == "9" then
+        print("New category:")
+        local new_category = read()
+        if new_category ~= "" then app_data.category = new_category end
+    end
+    
+    if field ~= "" then
+        saveData()
+        term.setTextColor(colors.green)
+        print("App updated!")
+        term.setTextColor(colors.white)
+        
+        print("Push update notification? (y/N)")
+        local push_update = read()
+        if push_update:lower() == "y" then
+            broadcastAppUpdates(app_id)
+            print("Update notification sent!")
+        end
+        sleep(2)
+    end
+end
+
+local function deleteApp()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== DELETE APP ===")
+    
+    local app_list = {}
+    for app_id, _ in pairs(config.apps) do
+        table.insert(app_list, app_id)
+    end
+    
+    if #app_list == 0 then
+        print("No apps to delete")
+        sleep(1)
+        return
+    end
+    
+    print("Available apps:")
+    for i, app_id in ipairs(app_list) do
+        print(i .. ". " .. app_id .. " (" .. config.apps[app_id].name .. ")")
+    end
+    
+    print("\nEnter app number to delete:")
+    local choice = tonumber(read())
+    
+    if not choice or choice < 1 or choice > #app_list then
+        print("Invalid choice")
+        sleep(1)
+        return
+    end
+    
+    local app_id = app_list[choice]
+    local app_name = config.apps[app_id].name
+    
+    print("\nDelete " .. app_name .. "? (y/N)")
+    local confirm = read()
+    
+    if confirm:lower() == "y" then
+        config.apps[app_id] = nil
+        saveData()
+        
+        term.setTextColor(colors.green)
+        print("App deleted!")
+        term.setTextColor(colors.white)
+        sleep(1)
+    end
+end
+
+local function pushUpdateNotification()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== PUSH UPDATE NOTIFICATION ===")
+    
+    local app_list = {}
+    for app_id, _ in pairs(config.apps) do
+        table.insert(app_list, app_id)
+    end
+    
+    if #app_list == 0 then
+        print("No apps available")
+        sleep(1)
+        return
+    end
+    
+    print("Available apps:")
+    for i, app_id in ipairs(app_list) do
+        print(i .. ". " .. app_id .. " (" .. config.apps[app_id].name .. " v" .. config.apps[app_id].version .. ")")
+    end
+    print(#app_list + 1 .. ". All apps")
+    
+    print("\nEnter choice:")
+    local choice = tonumber(read())
+    
+    if not choice or choice < 1 or choice > #app_list + 1 then
+        print("Invalid choice")
+        sleep(1)
+        return
+    end
+    
+    if choice == #app_list + 1 then
+        -- Push all apps
+        local count = 0
+        for app_id, _ in pairs(config.apps) do
+            broadcastAppUpdates(app_id)
+            count = count + 1
+        end
+        print("Pushed updates for " .. count .. " apps")
+    else
+        -- Push specific app
+        local app_id = app_list[choice]
+        broadcastAppUpdates(app_id)
+        print("Update notification sent for " .. config.apps[app_id].name)
+    end
+    
+    sleep(2)
 end
 
 local function configureServer()
@@ -1511,6 +2280,10 @@ local function main()
                             return
                         elseif key == keys.c then
                             configureServer()
+                            result = "continue"
+                            return
+                        elseif key == keys.r then
+                            showAppRepository()
                             result = "continue"
                             return
                         elseif key == keys.q then
