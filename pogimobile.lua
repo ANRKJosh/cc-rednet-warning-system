@@ -1,11 +1,12 @@
--- PogiMobile v2.1 - Complete Communication System
--- Fixed messaging system with proper background processing
+-- PoggishTown Phone System v2.1 - Complete
+-- Modern messaging and communication system with server-based authentication
+-- Protocol: pogphone (separate from security system)
 
 local PHONE_PROTOCOL = "pogphone"
 local SECURITY_PROTOCOL = "pogalert"
-local CONFIG_FILE = "pogimobile_config"
-local CONTACTS_FILE = "pogimobile_contacts"
-local MESSAGES_FILE = "pogimobile_messages"
+local CONFIG_FILE = "pogphone_config"
+local CONTACTS_FILE = "pogphone_contacts"
+local MESSAGES_FILE = "pogphone_messages"
 
 -- Device detection
 local function isWirelessTerminal()
@@ -26,49 +27,76 @@ local function isWirelessTerminal()
     return has_only_modem and #peripherals == 1
 end
 
--- Global state
-local computer_id = os.getComputerID()
-local is_terminal = isWirelessTerminal()
-local speaker = peripheral.find("speaker")
-
 -- Configuration
 local config = {
     username = nil,
+    server_id = nil,
+    auto_connect = true,
+    message_history_limit = 100,
     notification_sound = true,
     vibrate_on_message = true,
-    message_history_limit = 100
+    compact_mode = false,
+    update_url = "https://raw.githubusercontent.com/your-repo/poggishtown-phone.lua",
+    -- Security integration (no hardcoded password)
+    security_authenticated = false,
+    security_auth_expires = 0,
+    allow_emergency_alerts = false,
+    -- Modem configuration
+    modem_type_override = "auto",
+    force_ender_modem = false
 }
 
--- State
-local authenticated = false
-local auth_expires = 0
+-- Global state
+local computer_id = os.getComputerID()
+local is_terminal = isWirelessTerminal()
+local modem_side = nil
+local speaker = peripheral.find("speaker")
+
+local connected_servers = {}
+local online_users = {}
 local contacts = {}
 local messages = {}
-local online_users = {}
-local active_alarms = {}
-local security_nodes = {}
-local connected_servers = {}
 local unread_count = 0
+local current_screen = "main"
+local selected_contact = nil
+local selected_conversation = nil
+local security_nodes = {}
+local active_alarms = {}
 
--- Debug
-local debug_log = {}
+-- Authentication state
+local auth_request_pending = false
+local auth_request_start_time = 0
+local auth_last_result = nil
+
+-- Debug logging
+debug_log = debug_log or {}
 
 local function addDebugLog(message)
-    table.insert(debug_log, textutils.formatTime(os.time(), true) .. " " .. message)
-    if #debug_log > 10 then
-        table.remove(debug_log, 1)
+    if not debug_log then debug_log = {} end
+    
+    -- Limit debug log size and reduce spam from heartbeats
+    if not string.find(message, "HB:") or auth_request_pending then
+        table.insert(debug_log, textutils.formatTime(os.time(), true) .. " " .. message)
+        if #debug_log > 5 then  -- Keep only last 5 entries
+            table.remove(debug_log, 1)
+        end
     end
 end
 
--- Helper function to count table entries
-local function tableCount(t)
-    local count = 0
-    for _ in pairs(t) do count = count + 1 end
-    return count
+-- Helper functions
+local function getUsernameById(user_id)
+    if contacts[user_id] then
+        return contacts[user_id].name
+    end
+    if online_users[user_id] then
+        return online_users[user_id].username
+    end
+    return "User-" .. user_id
 end
 
 -- Data management
 local function loadData()
+    -- Load config
     if fs.exists(CONFIG_FILE) then
         local file = fs.open(CONFIG_FILE, "r")
         if file then
@@ -81,10 +109,18 @@ local function loadData()
                         config[key] = value
                     end
                 end
+                addDebugLog("Config loaded OK, user=" .. tostring(config.username))
+            else
+                addDebugLog("Config parse failed")
             end
+        else
+            addDebugLog("Config file open failed")
         end
+    else
+        addDebugLog("Config file missing")
     end
     
+    -- Load contacts
     if fs.exists(CONTACTS_FILE) then
         local file = fs.open(CONTACTS_FILE, "r")
         if file then
@@ -97,6 +133,7 @@ local function loadData()
         end
     end
     
+    -- Load messages
     if fs.exists(MESSAGES_FILE) then
         local file = fs.open(MESSAGES_FILE, "r")
         if file then
@@ -117,18 +154,24 @@ local function loadData()
 end
 
 local function saveData()
+    -- Save config first
     local file = fs.open(CONFIG_FILE, "w")
     if file then
         file.write(textutils.serialize(config))
         file.close()
+        addDebugLog("Config saved, user=" .. tostring(config.username))
+    else
+        addDebugLog("Config save failed")
     end
     
+    -- Save contacts
     local file2 = fs.open(CONTACTS_FILE, "w")
     if file2 then
         file2.write(textutils.serialize(contacts))
         file2.close()
     end
     
+    -- Save messages
     local recent_messages = {}
     for i = math.max(1, #messages - config.message_history_limit + 1), #messages do
         table.insert(recent_messages, messages[i])
@@ -142,15 +185,41 @@ local function saveData()
     end
 end
 
--- Utility functions
-local function hashPassword(password)
-    local hash = 0
-    for i = 1, #password do
-        hash = (hash * 31 + string.byte(password, i)) % 1000000
+-- Modem setup with configuration support
+local function initializeModem()
+    if config.modem_type_override ~= "auto" then
+        for _, side in pairs(peripheral.getNames()) do
+            if peripheral.getType(side) == "modem" then
+                local modem = peripheral.wrap(side)
+                if config.modem_type_override == "ender" then
+                    if modem and ((modem.isWireless and not modem.isWireless()) or not modem.isWireless) then
+                        modem_side = side
+                        rednet.open(side)
+                        return true
+                    end
+                elseif config.modem_type_override == "wireless" then
+                    if modem and modem.isWireless and modem.isWireless() then
+                        modem_side = side
+                        rednet.open(side)
+                        return true
+                    end
+                end
+            end
+        end
     end
-    return tostring(hash)
+    
+    -- Auto-detection fallback
+    for _, side in pairs(peripheral.getNames()) do
+        if peripheral.getType(side) == "modem" then
+            modem_side = side
+            rednet.open(side)
+            return true
+        end
+    end
+    return false
 end
 
+-- Username management
 local function getUsername()
     if config.username then
         return config.username
@@ -162,8 +231,105 @@ local function getUsername()
     return (is_terminal and "Terminal-" or "Computer-") .. computer_id
 end
 
-local function isAuthenticated()
-    return authenticated and os.time() < auth_expires
+local function setUsername()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== Setup Username ===")
+    local current = getUsername()
+    print("Current: " .. current)
+    print("")
+    print("Enter new username (or press Enter to keep current):")
+    
+    local new_name = read()
+    if new_name and new_name ~= "" then
+        config.username = new_name
+        saveData()
+        print("Username set to: " .. new_name)
+        sleep(1)
+    else
+        -- Save the current username if not already saved
+        if not config.username then
+            config.username = current
+            saveData()
+            print("Username saved as: " .. current)
+        else
+            print("Username unchanged: " .. current)
+        end
+        sleep(1)
+    end
+end
+
+-- Authentication functions
+local function hashPassword(password)
+    local hash = 0
+    for i = 1, #password do
+        hash = (hash * 31 + string.byte(password, i)) % 1000000
+    end
+    return tostring(hash)
+end
+
+local function requestServerAuthentication(password)
+    addDebugLog("AUTH: Function called with password length " .. #password)
+    
+    local hash = hashPassword(password)
+    addDebugLog("AUTH: Generated hash " .. hash)
+    
+    local message = {
+        type = "security_auth_request",
+        password_hash = hash,
+        user_id = computer_id,
+        username = getUsername(),
+        timestamp = os.time()
+    }
+    
+    addDebugLog("AUTH: Message constructed - type=" .. message.type .. " user=" .. message.user_id)
+    addDebugLog("AUTH: About to broadcast on protocol '" .. PHONE_PROTOCOL .. "'")
+    
+    -- Test the broadcast with error handling
+    local success, error_msg = pcall(function()
+        rednet.broadcast(message, PHONE_PROTOCOL)
+    end)
+    
+    if success then
+        addDebugLog("AUTH: Broadcast call succeeded")
+    else
+        addDebugLog("AUTH: Broadcast failed - " .. tostring(error_msg))
+    end
+    
+    -- Set pending state
+    auth_request_pending = true
+    auth_request_start_time = os.clock()  -- Use os.clock() for elapsed time
+    auth_last_result = nil
+    
+    addDebugLog("AUTH: Request complete, pending=" .. tostring(auth_request_pending))
+    
+    return true
+end
+
+local function requestModemConfiguration()
+    local message = {
+        type = "modem_detection_request",
+        user_id = computer_id,
+        current_type = config.modem_type_override,
+        timestamp = os.time()
+    }
+    
+    addDebugLog("CONFIG: Sending modem detection request on protocol " .. PHONE_PROTOCOL)
+    rednet.broadcast(message, PHONE_PROTOCOL)
+end
+
+local function isSecurityAuthenticated()
+    return config.security_authenticated and os.time() < config.security_auth_expires
+end
+
+-- Contact management
+local function addContact(id, name)
+    contacts[id] = {
+        name = name,
+        id = id,
+        added_time = os.time()
+    }
+    saveData()
 end
 
 local function getContactName(id)
@@ -176,86 +342,7 @@ local function getContactName(id)
     return "User-" .. id
 end
 
--- Initialize modem
-local function initModem()
-    for _, side in pairs(peripheral.getNames()) do
-        if peripheral.getType(side) == "modem" then
-            rednet.open(side)
-            addDebugLog("Modem opened on " .. side)
-            return true
-        end
-    end
-    print("ERROR: No modem found!")
-    return false
-end
-
--- Authentication
-local function authenticate(password)
-    addDebugLog("Sending auth request for user " .. computer_id)
-    
-    local message = {
-        type = "security_auth_request",
-        password_hash = hashPassword(password),
-        user_id = computer_id,
-        username = getUsername(),
-        timestamp = os.time()
-    }
-    
-    rednet.broadcast(message, PHONE_PROTOCOL)
-    
-    print("Waiting for server response...")
-    local start_time = os.clock()
-    
-    while (os.clock() - start_time) < 10 do
-        local sender_id, response, protocol = rednet.receive(nil, 1)
-        
-        if sender_id and protocol == PHONE_PROTOCOL then
-            if response.type == "security_auth_response" and response.target_user_id == computer_id then
-                addDebugLog("Received auth response: " .. tostring(response.authenticated))
-                
-                if response.authenticated then
-                    authenticated = true
-                    auth_expires = response.expires or (os.time() + 3600)
-                    term.setTextColor(colors.green)
-                    print("[OK] Authentication successful!")
-                    term.setTextColor(colors.white)
-                    return true
-                else
-                    term.setTextColor(colors.red)
-                    print("[FAIL] Authentication failed!")
-                    term.setTextColor(colors.white)
-                    return false
-                end
-                
-            elseif response.type == "server_announcement" and response.auth_result_for_user == computer_id then
-                addDebugLog("Received disguised auth response: " .. tostring(response.auth_success))
-                
-                if response.auth_success then
-                    authenticated = true
-                    auth_expires = response.auth_expires or (os.time() + 3600)
-                    term.setTextColor(colors.green)
-                    print("[OK] Authentication successful!")
-                    term.setTextColor(colors.white)
-                    return true
-                else
-                    term.setTextColor(colors.red)
-                    print("[FAIL] Authentication failed!")
-                    term.setTextColor(colors.white)
-                    return false
-                end
-            end
-        end
-        
-        print("Waiting... " .. math.floor(os.clock() - start_time) .. "s")
-    end
-    
-    term.setTextColor(colors.red)
-    print("[TIMEOUT] Authentication timeout")
-    term.setTextColor(colors.white)
-    return false
-end
-
--- Messaging
+-- Message handling
 local function addMessage(from_id, to_id, content, msg_type)
     msg_type = msg_type or "direct"
     local message = {
@@ -294,29 +381,69 @@ local function addMessage(from_id, to_id, content, msg_type)
     return message
 end
 
-local function sendDirectMessage(to_id, content)
-    local message = {
-        type = "direct_message",
-        from_id = computer_id,
-        from_username = getUsername(),
-        to_id = to_id,
-        content = content,
-        timestamp = os.time(),
-        message_id = computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999)
-    }
+-- Get conversations (grouped by contact)
+local function getConversations()
+    local conversations = {}
+    local conversation_order = {}
     
-    addDebugLog("SEND: Broadcasting message to " .. to_id .. ": " .. content)
-    addDebugLog("SEND: Message ID: " .. message.message_id)
+    for _, msg in ipairs(messages) do
+        local contact_id = nil
+        local contact_name = nil
+        
+        if msg.from_id == computer_id then
+            -- Outgoing message
+            contact_id = msg.to_id
+            contact_name = getContactName(msg.to_id)
+        else
+            -- Incoming message
+            contact_id = msg.from_id
+            contact_name = getContactName(msg.from_id)
+        end
+        
+        if not conversations[contact_id] then
+            conversations[contact_id] = {
+                contact_id = contact_id,
+                contact_name = contact_name,
+                messages = {},
+                last_message_time = 0,
+                unread_count = 0
+            }
+            table.insert(conversation_order, contact_id)
+        end
+        
+        table.insert(conversations[contact_id].messages, msg)
+        conversations[contact_id].last_message_time = math.max(conversations[contact_id].last_message_time, msg.timestamp)
+        
+        if not msg.read and msg.to_id == computer_id then
+            conversations[contact_id].unread_count = conversations[contact_id].unread_count + 1
+        end
+    end
     
-    rednet.broadcast(message, PHONE_PROTOCOL)
-    addMessage(computer_id, to_id, content, "direct")
-    addDebugLog("SEND: Message sent and stored locally")
+    -- Sort conversations by last message time
+    table.sort(conversation_order, function(a, b)
+        return conversations[a].last_message_time > conversations[b].last_message_time
+    end)
+    
+    return conversations, conversation_order
 end
 
--- Emergency alerts
+-- Mark conversation as read
+local function markConversationRead(contact_id)
+    local read_count = 0
+    for _, msg in ipairs(messages) do
+        if msg.from_id == contact_id and msg.to_id == computer_id and not msg.read then
+            msg.read = true
+            read_count = read_count + 1
+        end
+    end
+    unread_count = unread_count - read_count
+    saveData()
+end
+
+-- Security alert functions
 local function sendSecurityAlert(alarm_type)
-    if not isAuthenticated() then
-        return false, "Not authenticated"
+    if not config.allow_emergency_alerts or not isSecurityAuthenticated() then
+        return false, "Not authenticated for emergency alerts"
     end
     
     local message = {
@@ -335,19 +462,19 @@ local function sendSecurityAlert(alarm_type)
     
     rednet.broadcast(message, SECURITY_PROTOCOL)
     
+    -- Also add the alarm to our own active alarms immediately
     active_alarms[computer_id] = {
         type = alarm_type,
         source_name = getUsername(),
         start_time = os.time()
     }
     
-    addDebugLog("Sent " .. alarm_type .. " alert")
     return true, "Alert sent"
 end
 
 local function sendSecurityCancel()
-    if not isAuthenticated() then
-        return false, "Not authenticated"
+    if not config.allow_emergency_alerts or not isSecurityAuthenticated() then
+        return false, "Not authenticated for emergency alerts"
     end
     
     local message = {
@@ -364,12 +491,23 @@ local function sendSecurityCancel()
     }
     
     rednet.broadcast(message, SECURITY_PROTOCOL)
-    active_alarms = {}
-    addDebugLog("Sent cancel signal")
     return true, "Cancel sent"
 end
 
--- Network functions
+local function requestAlarmSync()
+    -- Send a heartbeat to trigger alarm sync from server
+    local message = {
+        type = "security_heartbeat",
+        computer_id = computer_id,
+        device_name = getUsername(),
+        timestamp = os.time(),
+        alarm_active = false,  -- We're not alarming, trigger sync
+        device_type = is_terminal and "terminal" or "computer"
+    }
+    rednet.broadcast(message, SECURITY_PROTOCOL)
+end
+
+-- Network communication
 local function broadcastPresence()
     local message = {
         type = "user_presence",
@@ -381,6 +519,21 @@ local function broadcastPresence()
     rednet.broadcast(message, PHONE_PROTOCOL)
 end
 
+local function sendDirectMessage(to_id, content)
+    local message = {
+        type = "direct_message",
+        from_id = computer_id,
+        from_username = getUsername(),
+        to_id = to_id,
+        content = content,
+        timestamp = os.time(),
+        message_id = computer_id .. "_" .. os.time() .. "_" .. math.random(1000, 9999)
+    }
+    
+    rednet.broadcast(message, PHONE_PROTOCOL)
+    addMessage(computer_id, to_id, content, "direct")
+end
+
 local function requestUserList()
     local message = {
         type = "user_list_request",
@@ -390,11 +543,110 @@ local function requestUserList()
     rednet.broadcast(message, PHONE_PROTOCOL)
 end
 
--- FIXED: Continuous background message processing
+-- Network test function
+local function performNetworkTest()
+    print("=== NETWORK TEST ===")
+    print("Testing basic network connectivity...")
+    print("")
+    
+    local test_message = {
+        type = "network_test",
+        from_user = computer_id,
+        test_data = "Hello from " .. getUsername(),
+        timestamp = os.time()
+    }
+    
+    addDebugLog("NET_TEST: Sending network test on " .. PHONE_PROTOCOL)
+    
+    -- Test rednet.broadcast with error handling
+    local success, error_msg = pcall(function()
+        rednet.broadcast(test_message, PHONE_PROTOCOL)
+    end)
+    
+    if success then
+        addDebugLog("NET_TEST: Broadcast call succeeded")
+        term.setTextColor(colors.green)
+        print("[OK] Broadcast call succeeded")
+        term.setTextColor(colors.white)
+    else
+        addDebugLog("NET_TEST: Broadcast failed - " .. tostring(error_msg))
+        term.setTextColor(colors.red)
+        print("[FAIL] Broadcast failed: " .. tostring(error_msg))
+        term.setTextColor(colors.white)
+    end
+    
+    print("")
+    print("Network Information:")
+    print("PHONE_PROTOCOL = '" .. PHONE_PROTOCOL .. "'")
+    print("SECURITY_PROTOCOL = '" .. SECURITY_PROTOCOL .. "'")
+    print("Computer ID = " .. computer_id)
+    print("Modem side = " .. (modem_side or "none"))
+    
+    -- Test if rednet is open
+    if modem_side then
+        local modem = peripheral.wrap(modem_side)
+        if modem then
+            print("Modem type = " .. (modem.isWireless and (modem.isWireless() and "wireless" or "ender") or "unknown"))
+            print("Rednet open = " .. (rednet.isOpen(modem_side) and "YES" or "NO"))
+        else
+            print("Modem = NOT FOUND")
+        end
+    else
+        print("Modem = NO SIDE SET")
+    end
+    
+    print("")
+    print("Check server logs for received test message.")
+    print("Press any key to continue...")
+    os.pullEvent("key")
+end
+
+-- App store functions
+local function requestAppList()
+    local message = {
+        type = "app_list_request",
+        from_id = computer_id,
+        device_type = is_terminal and "terminal" or "computer",
+        timestamp = os.time()
+    }
+    rednet.broadcast(message, PHONE_PROTOCOL)
+end
+
+local function downloadApp(app_id)
+    local message = {
+        type = "app_download_request",
+        app_id = app_id,
+        from_id = computer_id,
+        timestamp = os.time()
+    }
+    rednet.broadcast(message, PHONE_PROTOCOL)
+end
+
+-- Message processing
 local function handleMessage(sender_id, message, protocol)
-    addDebugLog("RCV: " .. protocol .. "/" .. (message.type or "unknown") .. " from " .. sender_id)
+    -- Debug: Log ALL messages with full details when auth is pending
+    if auth_request_pending then
+        addDebugLog("MSG: " .. protocol .. "/" .. (message.type or "?") .. " from " .. sender_id)
+        
+        -- Log the entire message structure for auth-related messages
+        if message.type == "security_auth_response" or message.type == "auth_test" then
+            addDebugLog("FULL_MSG: " .. textutils.serialize(message))
+        end
+        
+        -- Also log if it's the right protocol
+        if protocol == PHONE_PROTOCOL then
+            addDebugLog("PHONE_PROTO: Correct protocol match")
+        else
+            addDebugLog("OTHER_PROTO: Protocol mismatch - got " .. protocol .. " expected " .. PHONE_PROTOCOL)
+        end
+    end
     
     if protocol == PHONE_PROTOCOL then
+        -- Add debug for all phone protocol messages when auth is pending
+        if auth_request_pending and message.type then
+            addDebugLog("PHONE: Received " .. message.type .. " from " .. sender_id)
+        end
+        
         if message.type == "user_presence" then
             online_users[message.user_id] = {
                 username = message.username,
@@ -403,25 +655,8 @@ local function handleMessage(sender_id, message, protocol)
             }
             
         elseif message.type == "direct_message" then
-            addDebugLog("MSG: Processing direct_message")
-            addDebugLog("MSG: From " .. message.from_id .. " To " .. message.to_id .. " My ID " .. computer_id)
-            addDebugLog("MSG: Content: " .. message.content)
-            
-            if message.to_id == computer_id then
-                addDebugLog("MSG: Message is for me!")
-                if message.from_id ~= computer_id then
-                    addDebugLog("MSG: Not from myself - adding message")
-                    addMessage(message.from_id, message.to_id, message.content, "direct")
-                    -- Show immediate notification without emoji
-                    print("\n[NEW] Message from " .. getContactName(message.from_id) .. "!")
-                    if config.notification_sound and speaker then
-                        speaker.playNote("pling", 1.0, 10)
-                    end
-                else
-                    addDebugLog("MSG: Ignoring - message from myself")
-                end
-            else
-                addDebugLog("MSG: Not for me - ignoring (for " .. message.to_id .. ")")
+            if message.to_id == computer_id and message.from_id ~= computer_id then
+                addMessage(message.from_id, message.to_id, message.content, "direct")
             end
             
         elseif message.type == "server_announcement" then
@@ -437,6 +672,66 @@ local function handleMessage(sender_id, message, protocol)
                     online_users[user_id] = user_data
                 end
             end
+            
+        elseif message.type == "auth_test" then
+            addDebugLog("TEST: Received auth_test - target=" .. tostring(message.target_user_id) .. " my_id=" .. computer_id)
+            if message.target_user_id == computer_id then
+                addDebugLog("TEST: Auth test message received successfully! authenticated=" .. tostring(message.authenticated))
+            end
+            
+        elseif message.type == "security_auth_response" then
+            addDebugLog("AUTH: Got response - target=" .. tostring(message.target_user_id) .. " my_id=" .. computer_id)
+            
+            -- Only process if this response is for us
+            if message.target_user_id == computer_id then
+                addDebugLog("AUTH: Processing response - authenticated=" .. tostring(message.authenticated))
+                
+                -- Clear pending auth request
+                auth_request_pending = false
+                
+                if message.authenticated then
+                    config.security_authenticated = true
+                    config.security_auth_expires = message.expires or (os.time() + 3600)
+                    config.allow_emergency_alerts = true
+                    auth_last_result = "success"
+                    addDebugLog("AUTH: Success - authenticated until " .. config.security_auth_expires)
+                    saveData()
+                else
+                    config.security_authenticated = false
+                    config.allow_emergency_alerts = false
+                    auth_last_result = "failed"
+                    addDebugLog("AUTH: Failed - incorrect password")
+                    saveData()
+                end
+            else
+                addDebugLog("AUTH: Ignoring response for user " .. (message.target_user_id or "unknown"))
+            end
+            
+        elseif message.type == "modem_detection_response" then
+            addDebugLog("CONFIG: Received modem detection response")
+            if message.recommended_type and message.recommended_type ~= "auto" then
+                config.modem_type_override = message.recommended_type
+                config.force_ender_modem = message.force_ender or false
+                saveData()
+                addDebugLog("CONFIG: Updated modem type to " .. message.recommended_type)
+            end
+            
+        elseif message.type == "network_test_response" then
+            addDebugLog("NET_TEST: Received network test response from server")
+            
+        elseif message.type == "config_update" then
+            if message.config_data then
+                local updated = false
+                for key, value in pairs(message.config_data) do
+                    if config[key] ~= nil then
+                        config[key] = value
+                        updated = true
+                    end
+                end
+                if updated then
+                    saveData()
+                end
+            end
         elseif message.type == "app_update_notification" then
             -- Show update notification
             if message.app_name then
@@ -444,28 +739,33 @@ local function handleMessage(sender_id, message, protocol)
                 print("Check App Store for updates")
             end
         else
-            addDebugLog("RCV: Unhandled phone message: " .. (message.type or "unknown"))
+            -- Log any unhandled phone protocol messages when auth is pending
+            if auth_request_pending then
+                addDebugLog("UNHANDLED: " .. (message.type or "unknown_type") .. " from " .. sender_id)
+            end
         end
         
     elseif protocol == SECURITY_PROTOCOL then
-        addDebugLog("SECURITY: Processing " .. (message.type or "unknown") .. " action=" .. (message.action or "none"))
+        -- Debug: Log all security messages received with details
+        addDebugLog("RCV: " .. sender_id .. " -> " .. (message.type or "?") .. "/" .. (message.action or "?") .. " orig:" .. (message.original_sender or "none"))
         
-        -- Skip our own messages
+        -- Only skip if this message originally came from us
         if message.original_sender == computer_id then
-            addDebugLog("SECURITY: Skipping - originally from us")
+            addDebugLog("SKIP: Message originally from us")
             return
         end
         
+        -- Also skip if sender is us and no relay info (direct loop)
         if sender_id == computer_id and not message.relayed_by_server then
-            addDebugLog("SECURITY: Skipping - direct loop from ourselves")
+            addDebugLog("SKIP: Direct loop from ourselves")
             return
         end
         
+        -- Always process security messages regardless of authentication for cancel messages
         if message.type == "security_alert" then
-            if message.action == "start" then
+            if message.action == "start" and isSecurityAuthenticated() then
                 local source_id = message.source_id or message.original_sender or sender_id
-                addDebugLog("SECURITY: Adding alarm from " .. source_id)
-                
+                addDebugLog("START: Adding alarm from " .. source_id)
                 active_alarms[source_id] = {
                     type = message.alarm_type or "general",
                     source_name = message.source_name or ("Node-" .. source_id),
@@ -477,7 +777,7 @@ local function handleMessage(sender_id, message, protocol)
                 end
                 if config.vibrate_on_message and is_terminal then
                     local original_bg = term.getBackgroundColor()
-                    for i = 1, 3 do
+                    for i = 1, 4 do
                         term.setBackgroundColor(colors.red)
                         term.clear()
                         sleep(0.05)
@@ -488,15 +788,24 @@ local function handleMessage(sender_id, message, protocol)
                 end
                 
             elseif message.action == "stop" then
+                addDebugLog("STOP: Processing cancel")
+                -- Process cancel messages regardless of authentication
                 if message.global_cancel then
+                    -- Global cancel - clear all alarms
                     active_alarms = {}
+                    addDebugLog("STOP: Cleared all alarms")
                 else
+                    -- Specific device cancel - clear just that alarm
                     local source_id = message.source_id or message.original_sender or sender_id
                     active_alarms[source_id] = nil
+                    addDebugLog("STOP: Cleared alarm from " .. source_id)
                 end
+            elseif message.action == "start" and not isSecurityAuthenticated() then
+                addDebugLog("SKIP: Not authenticated for security")
             end
             
-        elseif message.type == "security_heartbeat" then
+        elseif message.type == "security_heartbeat" and isSecurityAuthenticated() then
+            addDebugLog("HB: Processing heartbeat from " .. message.computer_id)
             security_nodes[message.computer_id] = {
                 device_name = message.device_name or ("Node-" .. message.computer_id),
                 device_type = message.device_type or "computer",
@@ -511,38 +820,43 @@ local function handleMessage(sender_id, message, protocol)
                     source_name = message.device_name or ("Node-" .. message.computer_id),
                     start_time = message.alarm_start_time or os.time()
                 }
+                addDebugLog("HB: Added alarm from " .. message.computer_id)
             else
                 active_alarms[message.computer_id] = nil
             end
         end
-    else
-        addDebugLog("RCV: Unknown protocol: " .. protocol)
     end
 end
 
--- UI Screens
-local function showMainMenu()
-    term.clear()
-    term.setCursorPos(1, 1)
-    
-    print("=== POGIMOBILE v2.1 ===")
+-- User interface screens
+local function drawHeader()
+    print("=== POGGISHTOWN PHONE v2.1 ===")
     print("User: " .. getUsername() .. " | ID: " .. computer_id)
-    
     if unread_count > 0 then
         term.setTextColor(colors.yellow)
-        print("[NEW] " .. unread_count .. " unread messages")
+        print("Unread: " .. unread_count .. " messages")
         term.setTextColor(colors.white)
     end
+    print("")
+end
+
+local function drawMainScreen()
+    term.clear()
+    term.setCursorPos(1, 1)
+    drawHeader()
     
-    local alarm_count = tableCount(active_alarms)
+    -- Count active alarms (even if not authenticated)
+    local alarm_count = 0
+    for _ in pairs(active_alarms) do alarm_count = alarm_count + 1 end
     
-    if alarm_count > 0 then
+    if isSecurityAuthenticated() and alarm_count > 0 then
         term.setTextColor(colors.red)
-        print("[ALERT] " .. alarm_count .. " ACTIVE ALARMS")
+        print("!!! " .. alarm_count .. " ACTIVE ALARMS !!!")
         term.setTextColor(colors.white)
+        print("")
     end
     
-    print("\nMain Menu:")
+    print("Main Menu:")
     
     -- Messages with unread indicator
     if unread_count > 0 then
@@ -554,15 +868,20 @@ local function showMainMenu()
     end
     
     print("2. Send Message")
-    print("3. Contacts")
+    
+    -- Contacts with count
+    local contact_count = 0
+    for _ in pairs(contacts) do contact_count = contact_count + 1 end
+    print("3. Contacts (" .. contact_count .. " saved)")
+    
     print("4. Online Users")
     
-    -- Emergency alerts with status
+    -- Emergency Alerts with alarm status
     if alarm_count > 0 then
         term.setTextColor(colors.red)
         print("5. Emergency Alerts [" .. alarm_count .. " ACTIVE]")
         term.setTextColor(colors.white)
-    elseif isAuthenticated() then
+    elseif isSecurityAuthenticated() then
         term.setTextColor(colors.green)
         print("5. Emergency Alerts [AUTHENTICATED]")
         term.setTextColor(colors.white)
@@ -572,599 +891,22 @@ local function showMainMenu()
     
     print("6. Settings")
     print("7. App Store")
-    print("D. Debug Info")
+    print("8. About")
+    
     if is_terminal then
         print("Q. Quit")
     end
-    print("\nEnter choice:")
-end
-
-local function showMessages()
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("=== MESSAGES ===")
-    
-    if #messages == 0 then
-        term.setTextColor(colors.gray)
-        print("No messages yet")
-        term.setTextColor(colors.white)
-        print("\nPress any key to return...")
-        os.pullEvent("key")
-        return
-    end
-    
-    -- Show recent messages (last 12)
-    local recent_messages = {}
-    for i = math.max(1, #messages - 11), #messages do
-        table.insert(recent_messages, messages[i])
-    end
-    
-    print("Recent Messages:")
-    print("================")
-    
-    for _, msg in ipairs(recent_messages) do
-        local time_str = textutils.formatTime(msg.timestamp, true)
-        local from_name = getContactName(msg.from_id)
-        local to_name = getContactName(msg.to_id)
-        
-        if msg.from_id == computer_id then
-            -- Message sent by us
-            term.setTextColor(colors.lightBlue)
-            print("[" .. time_str .. "] [SENT] To " .. to_name)
-            term.setTextColor(colors.white)
-            print("  " .. msg.content)
-        else
-            -- Message received
-            if not msg.read then
-                term.setTextColor(colors.yellow)
-                print("[" .. time_str .. "] [NEW] From " .. from_name)
-                term.setTextColor(colors.white)
-                msg.read = true
-                unread_count = math.max(0, unread_count - 1)
-            else
-                term.setTextColor(colors.green)
-                print("[" .. time_str .. "] [RECEIVED] From " .. from_name)
-                term.setTextColor(colors.white)
-            end
-            print("  " .. msg.content)
-        end
-        print("")
-    end
-    
-    if #messages > 12 then
-        term.setTextColor(colors.gray)
-        print("(" .. (#messages - 12) .. " older messages not shown)")
-        term.setTextColor(colors.white)
-    end
-    
-    saveData() -- Save read status
-    print("\nPress any key to return...")
-    os.pullEvent("key")
-end
-
-local function sendNewMessage()
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("=== SEND MESSAGE ===")
-    
-    -- Show contacts first
-    local contact_count = tableCount(contacts)
-    
-    if contact_count > 0 then
-        print("Contacts:")
-        local contact_list = {}
-        for id, contact in pairs(contacts) do
-            table.insert(contact_list, {id = id, contact = contact})
-        end
-        
-        for i, item in ipairs(contact_list) do
-            if online_users[item.id] then
-                term.setTextColor(colors.green)
-                print("C" .. i .. ". [ONLINE] " .. item.contact.name)
-            else
-                term.setTextColor(colors.red)
-                print("C" .. i .. ". [OFFLINE] " .. item.contact.name)
-            end
-            term.setTextColor(colors.white)
-        end
-        print("")
-    end
-    
-    -- Get online users
-    local user_list = {}
-    for id, user in pairs(online_users) do
-        if id ~= computer_id then
-            table.insert(user_list, {id = id, data = user})
-        end
-    end
-    
-    if #user_list == 0 then
-        print("Getting online users...")
-        requestUserList()
-        
-        local start_time = os.clock()
-        while (os.clock() - start_time) < 3 do
-            local sender_id, message, protocol = rednet.receive(nil, 0.5)
-            if sender_id then
-                handleMessage(sender_id, message, protocol)
-            end
-        end
-        
-        user_list = {}
-        for id, user in pairs(online_users) do
-            if id ~= computer_id then
-                table.insert(user_list, {id = id, data = user})
-            end
-        end
-    end
-    
-    if #user_list > 0 then
-        print("Online Users:")
-        for i, user in ipairs(user_list) do
-            term.setTextColor(colors.green)
-            print("U" .. i .. ". [ONLINE] " .. user.data.username)
-            term.setTextColor(colors.white)
-        end
-        print("")
-    end
-    
-    if contact_count == 0 and #user_list == 0 then
-        term.setTextColor(colors.red)
-        print("No contacts or online users found.")
-        term.setTextColor(colors.white)
-        print("Add contacts first or wait for users to come online.")
-        print("\nPress any key to return...")
-        os.pullEvent("key")
-        return
-    end
-    
-    print("Enter choice (C1-C" .. contact_count .. " for contacts, U1-U" .. #user_list .. " for online users):")
-    print("Or B to go back")
-    local choice = read()
-    
-    if choice:lower() == "b" then
-        return
-    end
-    
-    local target_id = nil
-    local target_name = nil
-    
-    -- Parse contact choice
-    if choice:sub(1,1):lower() == "c" then
-        local contact_num = tonumber(choice:sub(2))
-        if contact_num then
-            local contact_list = {}
-            for id, contact in pairs(contacts) do
-                table.insert(contact_list, {id = id, contact = contact})
-            end
-            
-            if contact_num >= 1 and contact_num <= #contact_list then
-                target_id = contact_list[contact_num].id
-                target_name = contact_list[contact_num].contact.name
-            end
-        end
-    end
-    
-    -- Parse online user choice
-    if choice:sub(1,1):lower() == "u" then
-        local user_num = tonumber(choice:sub(2))
-        if user_num and user_num >= 1 and user_num <= #user_list then
-            target_id = user_list[user_num].id
-            target_name = user_list[user_num].data.username
-        end
-    end
-    
-    if target_id and target_name then
-        print("\nTo: " .. target_name)
-        print("Message:")
-        local message_content = read()
-        
-        if message_content and message_content ~= "" then
-            sendDirectMessage(target_id, message_content)
-            term.setTextColor(colors.green)
-            print("[OK] Message sent!")
-            term.setTextColor(colors.white)
-            if not online_users[target_id] then
-                term.setTextColor(colors.yellow)
-                print("(Recipient is offline - message will be delivered when they come online)")
-                term.setTextColor(colors.white)
-            end
-            sleep(2)
-        end
-    else
-        term.setTextColor(colors.red)
-        print("Invalid choice")
-        term.setTextColor(colors.white)
-        sleep(1)
-    end
-end
-
-local function showContacts()
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("=== CONTACTS ===")
-    
-    local contact_count = tableCount(contacts)
-    
-    if contact_count == 0 then
-        term.setTextColor(colors.gray)
-        print("No contacts saved.")
-        term.setTextColor(colors.white)
-        print("")
-        print("A - Add Contact | B - Back")
-    else
-        print("Saved Contacts:")
-        local contact_list = {}
-        for id, contact in pairs(contacts) do
-            table.insert(contact_list, {id = id, contact = contact})
-        end
-        
-        for i, item in ipairs(contact_list) do
-            if online_users[item.id] then
-                term.setTextColor(colors.green)
-                print(i .. ". " .. item.contact.name .. " (ID: " .. item.id .. ") [ONLINE]")
-            else
-                term.setTextColor(colors.red)
-                print(i .. ". " .. item.contact.name .. " (ID: " .. item.id .. ") [OFFLINE]")
-            end
-            term.setTextColor(colors.white)
-        end
-        
-        print("")
-        print("1-" .. #contact_list .. " - Message Contact")
-        print("A - Add Contact | D - Delete Contact | B - Back")
-    end
-    
-    print("\nEnter choice:")
-    local input = read()
-    
-    if input:lower() == "b" then
-        return
-    elseif input:lower() == "a" then
-        -- Add contact
-        print("\nAdd Contact")
-        print("Enter contact's computer ID:")
-        local contact_id = tonumber(read())
-        
-        if contact_id and contact_id ~= computer_id then
-            print("Enter contact name:")
-            local contact_name = read()
-            
-            if contact_name and contact_name ~= "" then
-                contacts[contact_id] = {
-                    name = contact_name,
-                    id = contact_id,
-                    added_time = os.time()
-                }
-                saveData()
-                term.setTextColor(colors.green)
-                print("[OK] Contact added!")
-                term.setTextColor(colors.white)
-                sleep(1)
-            end
-        else
-            term.setTextColor(colors.red)
-            print("Invalid ID")
-            term.setTextColor(colors.white)
-            sleep(1)
-        end
-        
-    elseif input:lower() == "d" and contact_count > 0 then
-        -- Delete contact
-        print("\nDelete Contact")
-        print("Enter contact number to delete:")
-        local contact_num = tonumber(read())
-        
-        if contact_num and contact_num >= 1 and contact_num <= contact_count then
-            local contact_list = {}
-            for id, contact in pairs(contacts) do
-                table.insert(contact_list, {id = id, contact = contact})
-            end
-            
-            local to_delete = contact_list[contact_num]
-            contacts[to_delete.id] = nil
-            saveData()
-            term.setTextColor(colors.green)
-            print("[OK] Contact deleted!")
-            term.setTextColor(colors.white)
-            sleep(1)
-        end
-        
-    else
-        -- Try to message contact
-        local contact_num = tonumber(input)
-        if contact_num and contact_count > 0 then
-            local contact_list = {}
-            for id, contact in pairs(contacts) do
-                table.insert(contact_list, {id = id, contact = contact})
-            end
-            
-            if contact_num >= 1 and contact_num <= #contact_list then
-                local target_contact = contact_list[contact_num]
-                print("\nTo: " .. target_contact.contact.name)
-                print("Message:")
-                local message_content = read()
-                
-                if message_content and message_content ~= "" then
-                    sendDirectMessage(target_contact.id, message_content)
-                    term.setTextColor(colors.green)
-                    print("[OK] Message sent to " .. target_contact.contact.name .. "!")
-                    term.setTextColor(colors.white)
-                    if not online_users[target_contact.id] then
-                        term.setTextColor(colors.yellow)
-                        print("(Contact is offline - message will be delivered when they come online)")
-                        term.setTextColor(colors.white)
-                    end
-                    sleep(2)
-                end
-            end
-        end
-    end
-end
-
-local function showEmergencyAlerts()
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("=== EMERGENCY ALERTS ===")
-    print("User: " .. getUsername())
-    if isAuthenticated() then
-        term.setTextColor(colors.green)
-        print("Auth: AUTHENTICATED")
-        term.setTextColor(colors.white)
-    else
-        term.setTextColor(colors.red)
-        print("Auth: NOT AUTHENTICATED")
-        term.setTextColor(colors.white)
-    end
     print("")
-    
-    local alarm_count = 0
-    for source_id, alarm_data in pairs(active_alarms) do
-        alarm_count = alarm_count + 1
-        term.setTextColor(colors.red)
-        print("ACTIVE: " .. string.upper(alarm_data.type))
-        term.setTextColor(colors.white)
-        print("  From: " .. alarm_data.source_name)
-        print("  Time: " .. textutils.formatTime(alarm_data.start_time, true))
-        print("")
-    end
-    
-    if alarm_count == 0 then
-        term.setTextColor(colors.green)
-        print("All Clear - No Active Alarms")
-        term.setTextColor(colors.white)
-        print("")
-    end
-    
-    -- Show security nodes
-    local node_count = tableCount(security_nodes)
-    
-    if node_count > 0 then
-        print("Security Nodes (" .. node_count .. "):")
-        for node_id, node_data in pairs(security_nodes) do
-            local status = node_data.alarm_active and "[ALARM]" or "[OK]"
-            local time_ago = os.time() - node_data.last_seen
-            if time_ago < 60 then
-                if node_data.alarm_active then
-                    term.setTextColor(colors.red)
-                else
-                    term.setTextColor(colors.green)
-                end
-                print("  " .. node_data.device_name .. " " .. status)
-                term.setTextColor(colors.white)
-            end
-        end
-        print("")
-    end
-    
-    if isAuthenticated() then
-        print("Send Alert:")
-        print("G - General | E - Evacuation | L - Lockdown")
-        if alarm_count > 0 then
-            print("C - Cancel All Alarms")
-        end
-        print("O - Logout")
-    else
-        print("I - Login to Send Alerts")
-    end
-    
-    print("B - Back")
-    print("\nEnter choice:")
-    
-    local input = read()
-    
-    if input:lower() == "b" then
-        return
-    elseif input:lower() == "i" and not isAuthenticated() then
-        print("\nEnter password:")
-        local password = read("*")
-        if password and password ~= "" then
-            authenticate(password)
-        end
-    elseif input:lower() == "o" and isAuthenticated() then
-        authenticated = false
-        auth_expires = 0
-        print("\nLogged out")
-        sleep(1)
-    elseif isAuthenticated() then
-        if input:lower() == "g" then
-            local success, message = sendSecurityAlert("general")
-            print("\n" .. (success and "GENERAL ALERT SENT!" or ("Failed: " .. message)))
-            sleep(2)
-        elseif input:lower() == "e" then
-            local success, message = sendSecurityAlert("evacuation")
-            print("\n" .. (success and "EVACUATION ALERT SENT!" or ("Failed: " .. message)))
-            sleep(2)
-        elseif input:lower() == "l" then
-            local success, message = sendSecurityAlert("lockdown")
-            print("\n" .. (success and "LOCKDOWN ALERT SENT!" or ("Failed: " .. message)))
-            sleep(2)
-        elseif input:lower() == "c" then
-            local success, message = sendSecurityCancel()
-            print("\n" .. (success and "CANCEL SIGNAL SENT!" or ("Failed: " .. message)))
-            sleep(2)
-        end
-    end
+    print("Enter choice:")
 end
 
-local function showOnlineUsers()
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("=== ONLINE USERS ===")
-    
-    requestUserList()
-    print("Requesting user list...")
-    
-    local start_time = os.clock()
-    while (os.clock() - start_time) < 3 do
-        local sender_id, message, protocol = rednet.receive(nil, 0.5)
-        if sender_id then
-            handleMessage(sender_id, message, protocol)
-        end
-    end
-    
-    local count = 0
-    for user_id, user_data in pairs(online_users) do
-        if user_id ~= computer_id then
-            count = count + 1
-            local time_ago = os.time() - user_data.last_seen
-            local contact_name = contacts[user_id] and (" (" .. contacts[user_id].name .. ")") or ""
-            
-            if user_data.device_type == "terminal" then
-                term.setTextColor(colors.cyan)
-                print("[T] " .. user_data.username .. contact_name .. " - " .. time_ago .. "s ago")
-            else
-                term.setTextColor(colors.blue)
-                print("[C] " .. user_data.username .. contact_name .. " - " .. time_ago .. "s ago")
-            end
-            term.setTextColor(colors.white)
-        end
-    end
-    
-    if count == 0 then
-        term.setTextColor(colors.gray)
-        print("No other users online")
-        term.setTextColor(colors.white)
-    end
-    
-    print("\nPress any key to return...")
-    os.pullEvent("key")
-end
-
-local function showSettings()
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("=== SETTINGS ===")
-    print("")
-    print("User Settings:")
-    print("1. Username: " .. getUsername())
-    print("2. Notifications: " .. (config.notification_sound and "ON" or "OFF"))
-    print("3. Vibrate: " .. (config.vibrate_on_message and "ON" or "OFF"))
-    print("")
-    print("Security:")
-    if isAuthenticated() then
-        term.setTextColor(colors.green)
-        print("4. Emergency Auth: AUTHENTICATED")
-        term.setTextColor(colors.white)
-        local remaining = auth_expires - os.time()
-        print("   Expires: " .. math.floor(remaining / 60) .. " minutes")
-    else
-        term.setTextColor(colors.red)
-        print("4. Emergency Auth: NOT AUTHENTICATED")
-        term.setTextColor(colors.white)
-    end
-    print("")
-    print("Data:")
-    print("5. Clear Messages")
-    print("6. Debug Info")
-    print("")
-    print("B. Back")
-    print("\nEnter choice:")
-    
-    local input = read()
-    
-    if input:lower() == "b" then
-        return
-    elseif input == "1" then
-        print("\nEnter new username:")
-        local new_name = read()
-        if new_name and new_name ~= "" then
-            config.username = new_name
-            saveData()
-            term.setTextColor(colors.green)
-            print("[OK] Username updated!")
-            term.setTextColor(colors.white)
-        end
-        sleep(1)
-    elseif input == "2" then
-        config.notification_sound = not config.notification_sound
-        saveData()
-        term.setTextColor(colors.green)
-        print("\n[OK] Notifications " .. (config.notification_sound and "enabled" or "disabled"))
-        term.setTextColor(colors.white)
-        sleep(1)
-    elseif input == "3" then
-        config.vibrate_on_message = not config.vibrate_on_message
-        saveData()
-        term.setTextColor(colors.green)
-        print("\n[OK] Vibrate " .. (config.vibrate_on_message and "enabled" or "disabled"))
-        term.setTextColor(colors.white)
-        sleep(1)
-    elseif input == "4" then
-        if isAuthenticated() then
-            print("\nOptions:")
-            print("L - Logout")
-            print("Any other key to cancel")
-            local auth_input = read()
-            if auth_input:lower() == "l" then
-                authenticated = false
-                auth_expires = 0
-                term.setTextColor(colors.green)
-                print("[OK] Logged out of emergency system")
-                term.setTextColor(colors.white)
-                sleep(1)
-            end
-        else
-            print("\nEnter emergency system password:")
-            local password = read("*")
-            if password and password ~= "" then
-                if authenticate(password) then
-                    term.setTextColor(colors.green)
-                    print("[OK] Emergency authentication successful!")
-                    term.setTextColor(colors.white)
-                else
-                    term.setTextColor(colors.red)
-                    print("[FAIL] Authentication failed!")
-                    term.setTextColor(colors.white)
-                end
-                sleep(2)
-            end
-        end
-    elseif input == "5" then
-        print("\nClear all messages? (y/N)")
-        local confirm = read()
-        if confirm:lower() == "y" then
-            messages = {}
-            unread_count = 0
-            saveData()
-            term.setTextColor(colors.green)
-            print("[OK] All messages cleared!")
-            term.setTextColor(colors.white)
-        else
-            print("Cancelled")
-        end
-        sleep(1)
-    elseif input == "6" then
-        showDebugInfo()
-    end
-end
-
-local function showAppStore()
+-- Simple App Store screen
+local function drawAppStoreScreen()
     term.clear()
     term.setCursorPos(1, 1)
     print("=== APP STORE ===")
     print("Device: " .. (is_terminal and "Terminal" or "Computer"))
-    if isAuthenticated() then
+    if isSecurityAuthenticated() then
         term.setTextColor(colors.green)
         print("Security: AUTHENTICATED")
         term.setTextColor(colors.white)
@@ -1177,13 +919,7 @@ local function showAppStore()
     
     -- Request app list
     print("Requesting apps from server...")
-    local message = {
-        type = "app_list_request",
-        from_id = computer_id,
-        device_type = is_terminal and "terminal" or "computer",
-        timestamp = os.time()
-    }
-    rednet.broadcast(message, PHONE_PROTOCOL)
+    requestAppList()
     
     local apps_received = {}
     local start_time = os.clock()
@@ -1221,13 +957,11 @@ local function showAppStore()
         if is_terminal then
             print("Terminals can typically access:")
             print("- Communication apps (like this phone)")
+            print("- Admin tools (requires authentication)")
         else
             print("Computers can access:")
             print("- Security apps (requires authentication)")
-            print("- Admin tools (requires authentication)")
         end
-        print("")
-        print("If you need security access, authenticate first")
     else
         print("Available Apps:")
         print("")
@@ -1239,6 +973,8 @@ local function showAppStore()
                 term.setTextColor(colors.red)
             elseif category == "communication" then
                 term.setTextColor(colors.blue)
+            elseif category == "admin" then
+                term.setTextColor(colors.yellow)
             else
                 term.setTextColor(colors.white)
             end
@@ -1259,14 +995,7 @@ local function showAppStore()
             
             print("")
             print("Getting download info for " .. selected_app.data.name .. "...")
-            
-            local download_msg = {
-                type = "app_download_request",
-                app_id = selected_app.id,
-                from_id = computer_id,
-                timestamp = os.time()
-            }
-            rednet.broadcast(download_msg, PHONE_PROTOCOL)
+            downloadApp(selected_app.id)
             
             -- Wait for download response
             local download_start = os.clock()
@@ -1311,126 +1040,168 @@ local function showAppStore()
     print("Press any key to return...")
     os.pullEvent("key")
 end
+
+-- Input handling
+local function handleMainScreenInput()
+    local input = read()
+    
+    if input == "1" then
+        current_screen = "messages"
+    elseif input == "2" then
+        current_screen = "send_message"
+    elseif input == "3" then
+        current_screen = "contacts"
+    elseif input == "4" then
+        current_screen = "online_users"
+        requestUserList()
+    elseif input == "5" then
+        current_screen = "emergency"
+    elseif input == "6" then
+        current_screen = "settings"
+    elseif input == "7" then
+        drawAppStoreScreen()
+    elseif input == "8" then
+        current_screen = "about"
+    elseif input:lower() == "q" and is_terminal then
+        return false
+    end
+    return true
+end
+
+-- Simple placeholder screens for now
+local function showSimpleScreen(title, message)
     term.clear()
     term.setCursorPos(1, 1)
-    print("=== DEBUG INFO ===")
-    print("Computer ID: " .. computer_id)
-    print("Device Type: " .. (is_terminal and "Terminal" or "Computer"))
-    print("Username: " .. getUsername())
-    print("Authenticated: " .. tostring(isAuthenticated()))
-    print("Active Alarms: " .. tableCount(active_alarms))
-    print("Online Users: " .. tableCount(online_users))
-    print("Stored Messages: " .. #messages)
+    drawHeader()
+    print("=== " .. title .. " ===")
     print("")
-    
-    print("Recent Debug Log:")
-    if #debug_log > 0 then
-        for _, entry in ipairs(debug_log) do
-            print("  " .. entry)
-        end
-    else
-        print("  No debug entries")
-    end
-    
-    print("\nPress any key to return...")
+    print(message)
+    print("")
+    print("Press any key to return...")
     os.pullEvent("key")
 end
 
-local function showDebugInfo()
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("=== DEBUG INFO ===")
-    print("Computer ID: " .. computer_id)
-    print("Device Type: " .. (is_terminal and "Terminal" or "Computer"))
-    print("Username: " .. getUsername())
-    print("Authenticated: " .. tostring(isAuthenticated()))
-    print("Active Alarms: " .. tableCount(active_alarms))
-    print("Online Users: " .. tableCount(online_users))
-    print("Stored Messages: " .. #messages)
-    print("")
-    
-    print("Recent Debug Log:")
-    if #debug_log > 0 then
-        for _, entry in ipairs(debug_log) do
-            print("  " .. entry)
-        end
-    else
-        print("  No debug entries")
-    end
-    
-    print("\nPress any key to return...")
-    os.pullEvent("key")
-end
-
--- FIXED: Main program with proper background message handling
+-- Main application loop
 local function main()
-    print("PogiMobile v2.1 Starting...")
+    -- Initialize debug log if not already initialized
+    if not debug_log then
+        debug_log = {}
+    end
     
-    if not initModem() then
+    -- Validate protocol constants
+    addDebugLog("INIT: PHONE_PROTOCOL='" .. PHONE_PROTOCOL .. "' SECURITY_PROTOCOL='" .. SECURITY_PROTOCOL .. "'")
+    
+    if not initializeModem() then
+        print("ERROR: No modem found!")
+        print("Please attach a wireless modem.")
         return
     end
     
     loadData()
     
-    -- Send initial presence
+    print("PoggishTown Phone v2.1 Starting...")
+    print("User: " .. getUsername())
+    print("Device: " .. (is_terminal and "Terminal" or "Computer"))
+    print("Modem: " .. (modem_side or "None") .. " (" .. config.modem_type_override .. ")")
+    sleep(1)
+    
     broadcastPresence()
+    requestUserList()
     
-    local last_presence = os.clock()
-    
-    while true do
-        -- Show main menu
-        showMainMenu()
-        
-        -- Handle user input with background message processing
-        local choice = nil
-        
-        -- Use parallel to handle both user input and background messages
-        parallel.waitForAny(
-            function()
-                choice = read()
-            end,
-            function()
-                while choice == nil do
-                    -- Continuously process background messages
-                    local sender_id, message, protocol = rednet.receive(nil, 0.1)
-                    if sender_id then
-                        handleMessage(sender_id, message, protocol)
-                    end
-                    
-                    -- Send presence every 30 seconds
-                    if os.clock() - last_presence > 30 then
-                        broadcastPresence()
-                        last_presence = os.clock()
-                    end
-                end
-            end
-        )
-        
-        -- Handle menu choice
-        if choice == "1" then
-            showMessages()
-        elseif choice == "2" then
-            sendNewMessage()
-        elseif choice == "3" then
-            showContacts()
-        elseif choice == "4" then
-            showOnlineUsers()
-        elseif choice == "5" then
-            showEmergencyAlerts()
-        elseif choice == "6" then
-            showSettings()
-        elseif choice == "7" then
-            showAppStore()
-        elseif choice:lower() == "d" then
-            showDebugInfo()
-        elseif choice:lower() == "q" and is_terminal then
-            break
-        end
+    -- Request alarm sync if authenticated
+    if isSecurityAuthenticated() then
+        requestAlarmSync()
+        print("Requesting alarm sync...")
+        sleep(1)
     end
     
-    print("PogiMobile v2.1 shutting down...")
+    current_screen = "main"
+    local presence_timer = os.startTimer(30)
+    local refresh_timer = os.startTimer(1)
+    
+    while true do
+        if current_screen == "main" then
+            drawMainScreen()
+            if not handleMainScreenInput() then
+                break
+            end
+        elseif current_screen == "messages" then
+            showSimpleScreen("MESSAGES", "Messages feature coming soon!\nFull messaging interface will be available.")
+            current_screen = "main"
+        elseif current_screen == "send_message" then
+            showSimpleScreen("SEND MESSAGE", "Send message feature coming soon!\nDirect messaging interface will be available.")
+            current_screen = "main"
+        elseif current_screen == "contacts" then
+            showSimpleScreen("CONTACTS", "Contacts feature coming soon!\nContact management interface will be available.")
+            current_screen = "main"
+        elseif current_screen == "online_users" then
+            showSimpleScreen("ONLINE USERS", "Online users feature coming soon!\nUser directory will be available.")
+            current_screen = "main"
+        elseif current_screen == "emergency" then
+            showSimpleScreen("EMERGENCY ALERTS", "Emergency alerts feature coming soon!\nSecurity integration will be available.")
+            current_screen = "main"
+        elseif current_screen == "settings" then
+            showSimpleScreen("SETTINGS", "Settings feature coming soon!\nConfiguration options will be available.")
+            current_screen = "main"
+        elseif current_screen == "about" then
+            term.clear()
+            term.setCursorPos(1, 1)
+            print("=== ABOUT ===")
+            print("PoggishTown Phone v2.1")
+            print("Modern messaging with security integration")
+            print("")
+            print("Features:")
+            print("- Server-based message relay")
+            print("- Real-time messaging and delivery")
+            print("- Contact management")
+            print("- Conversation threading")
+            print("- Emergency alert system")
+            print("- Configurable notifications")
+            print("- App Store integration")
+            print("")
+            print("Press any key to return...")
+            os.pullEvent("key")
+            current_screen = "main"
+        end
+        
+        -- Handle background events
+        parallel.waitForAny(
+            function()
+                while true do
+                    local event, param1, param2, param3 = os.pullEvent()
+                    
+                    if event == "rednet_message" then
+                        local sender_id, message, protocol = param1, param2, param3
+                        
+                        -- Debug: Log all rednet events when auth is pending
+                        if auth_request_pending then
+                            addDebugLog("REDNET_EVENT: " .. protocol .. " from " .. sender_id)
+                        end
+                        
+                        if protocol == PHONE_PROTOCOL or protocol == SECURITY_PROTOCOL then
+                            handleMessage(sender_id, message, protocol)
+                        else
+                            if auth_request_pending then
+                                addDebugLog("UNKNOWN_PROTO: " .. protocol .. " from " .. sender_id)
+                            end
+                        end
+                    elseif event == "timer" and param1 == presence_timer then
+                        broadcastPresence()
+                        presence_timer = os.startTimer(30)
+                    elseif event == "timer" and param1 == refresh_timer then
+                        refresh_timer = os.startTimer(1)  -- Standard 1 second refresh
+                    end
+                end
+            end,
+            function()
+                sleep(0.1)  -- Keep this short to ensure responsiveness
+            end
+        )
+    end
+    
+    print("PoggishTown Phone v2.1 shutting down...")
     saveData()
 end
 
--- Run the app
+-- Run the application
 main()
