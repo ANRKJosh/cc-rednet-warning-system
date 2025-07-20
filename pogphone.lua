@@ -1,4 +1,4 @@
--- PoggishTown Phone System v2.0
+-- PoggishTown Phone System v2.1 - Complete
 -- Modern messaging and communication system with server-based authentication
 -- Protocol: pogphone (separate from security system)
 
@@ -59,6 +59,7 @@ local messages = {}
 local unread_count = 0
 local current_screen = "main"
 local selected_contact = nil
+local selected_conversation = nil
 local security_nodes = {}
 local active_alarms = {}
 
@@ -82,6 +83,17 @@ local function addDebugLog(message)
     end
 end
 
+-- Helper functions
+local function getUsernameById(user_id)
+    if contacts[user_id] then
+        return contacts[user_id].name
+    end
+    if online_users[user_id] then
+        return online_users[user_id].username
+    end
+    return "User-" .. user_id
+end
+
 -- Data management
 local function loadData()
     -- Load config
@@ -97,7 +109,6 @@ local function loadData()
                         config[key] = value
                     end
                 end
-                -- Store load result for debug viewing
                 addDebugLog("Config loaded OK, user=" .. tostring(config.username))
             else
                 addDebugLog("Config parse failed")
@@ -348,6 +359,8 @@ local function addMessage(from_id, to_id, content, msg_type)
     
     if to_id == computer_id and from_id ~= computer_id then
         unread_count = unread_count + 1
+        addDebugLog("RECEIVED_MSG: From " .. from_id .. " - " .. content)
+        
         if config.notification_sound and speaker then
             speaker.playNote("pling", 1.0, 5)
         end
@@ -366,6 +379,65 @@ local function addMessage(from_id, to_id, content, msg_type)
     
     saveData()
     return message
+end
+
+-- Get conversations (grouped by contact)
+local function getConversations()
+    local conversations = {}
+    local conversation_order = {}
+    
+    for _, msg in ipairs(messages) do
+        local contact_id = nil
+        local contact_name = nil
+        
+        if msg.from_id == computer_id then
+            -- Outgoing message
+            contact_id = msg.to_id
+            contact_name = getContactName(msg.to_id)
+        else
+            -- Incoming message
+            contact_id = msg.from_id
+            contact_name = getContactName(msg.from_id)
+        end
+        
+        if not conversations[contact_id] then
+            conversations[contact_id] = {
+                contact_id = contact_id,
+                contact_name = contact_name,
+                messages = {},
+                last_message_time = 0,
+                unread_count = 0
+            }
+            table.insert(conversation_order, contact_id)
+        end
+        
+        table.insert(conversations[contact_id].messages, msg)
+        conversations[contact_id].last_message_time = math.max(conversations[contact_id].last_message_time, msg.timestamp)
+        
+        if not msg.read and msg.to_id == computer_id then
+            conversations[contact_id].unread_count = conversations[contact_id].unread_count + 1
+        end
+    end
+    
+    -- Sort conversations by last message time
+    table.sort(conversation_order, function(a, b)
+        return conversations[a].last_message_time > conversations[b].last_message_time
+    end)
+    
+    return conversations, conversation_order
+end
+
+-- Mark conversation as read
+local function markConversationRead(contact_id)
+    local read_count = 0
+    for _, msg in ipairs(messages) do
+        if msg.from_id == contact_id and msg.to_id == computer_id and not msg.read then
+            msg.read = true
+            read_count = read_count + 1
+        end
+    end
+    unread_count = unread_count - read_count
+    saveData()
 end
 
 -- Security alert functions
@@ -493,10 +565,14 @@ local function performNetworkTest()
     
     if success then
         addDebugLog("NET_TEST: Broadcast call succeeded")
-        print("✓ Broadcast call succeeded")
+        term.setTextColor(colors.green)
+        print("[OK] Broadcast call succeeded")
+        term.setTextColor(colors.white)
     else
         addDebugLog("NET_TEST: Broadcast failed - " .. tostring(error_msg))
-        print("✗ Broadcast failed: " .. tostring(error_msg))
+        term.setTextColor(colors.red)
+        print("[FAIL] Broadcast failed: " .. tostring(error_msg))
+        term.setTextColor(colors.white)
     end
     
     print("")
@@ -568,29 +644,6 @@ local function handleMessage(sender_id, message, protocol)
                 last_seen = os.time(),
                 capabilities = message.capabilities or {}
             }
-            
-            -- TEST: Check for disguised auth response
-            if message.auth_result_for_user == computer_id then
-                addDebugLog("DISGUISED_AUTH: Received auth result via server_announcement")
-                addDebugLog("DISGUISED_AUTH: Success=" .. tostring(message.auth_success))
-                
-                -- Process the disguised auth response
-                auth_request_pending = false
-                if message.auth_success then
-                    config.security_authenticated = true
-                    config.security_auth_expires = message.auth_expires or (os.time() + 3600)
-                    config.allow_emergency_alerts = true
-                    auth_last_result = "success"
-                    addDebugLog("DISGUISED_AUTH: Authentication successful!")
-                    saveData()
-                else
-                    config.security_authenticated = false
-                    config.allow_emergency_alerts = false
-                    auth_last_result = "failed"
-                    addDebugLog("DISGUISED_AUTH: Authentication failed!")
-                    saveData()
-                end
-            end
             
         elseif message.type == "user_list_response" then
             if message.users then
@@ -750,7 +803,7 @@ end
 
 -- User interface screens
 local function drawHeader()
-    print("=== POGGISHTOWN PHONE ===")
+    print("=== POGGISHTOWN PHONE v2.1 ===")
     print("User: " .. getUsername() .. " | ID: " .. computer_id)
     if unread_count > 0 then
         term.setTextColor(colors.yellow)
@@ -777,27 +830,326 @@ local function drawMainScreen()
     end
     
     print("Main Menu:")
-    print("1. Messages (" .. unread_count .. " unread)")
-    print("2. Contacts (" .. #contacts .. " saved)")
-    print("3. Online Users")
     
-    -- Always show Emergency Alerts, highlight if alarms active
-    if alarm_count > 0 then
-        term.setTextColor(colors.red)
-        print("4. Emergency Alerts (!)")
+    -- Messages with unread indicator
+    if unread_count > 0 then
+        term.setTextColor(colors.yellow)
+        print("1. Messages (" .. unread_count .. " unread) [NEW]")
         term.setTextColor(colors.white)
     else
-        print("4. Emergency Alerts")
+        print("1. Messages (" .. unread_count .. " unread)")
     end
     
-    print("5. Settings")
-    print("6. About")
+    print("2. Send Message")
+    
+    -- Contacts with count
+    local contact_count = 0
+    for _ in pairs(contacts) do contact_count = contact_count + 1 end
+    print("3. Contacts (" .. contact_count .. " saved)")
+    
+    print("4. Online Users")
+    
+    -- Emergency Alerts with alarm status
+    if alarm_count > 0 then
+        term.setTextColor(colors.red)
+        print("5. Emergency Alerts [" .. alarm_count .. " ACTIVE]")
+        term.setTextColor(colors.white)
+    elseif isSecurityAuthenticated() then
+        term.setTextColor(colors.green)
+        print("5. Emergency Alerts [AUTHENTICATED]")
+        term.setTextColor(colors.white)
+    else
+        print("5. Emergency Alerts")
+    end
+    
+    print("6. Settings")
+    print("7. About")
     
     if is_terminal then
         print("Q. Quit")
     end
     print("")
     print("Enter choice:")
+end
+
+-- MESSAGES SCREEN - Now properly implemented
+local function drawMessagesScreen()
+    term.clear()
+    term.setCursorPos(1, 1)
+    drawHeader()
+    
+    local conversations, conversation_order = getConversations()
+    
+    if #conversation_order == 0 then
+        print("No messages yet.")
+        print("Send your first message from the main menu!")
+        print("")
+        print("B. Back to main menu")
+        return
+    end
+    
+    print("Conversations:")
+    print("")
+    
+    for i, contact_id in ipairs(conversation_order) do
+        local conv = conversations[contact_id]
+        local preview = ""
+        if #conv.messages > 0 then
+            local last_msg = conv.messages[#conv.messages]
+            preview = string.sub(last_msg.content, 1, 30)
+            if #last_msg.content > 30 then
+                preview = preview .. "..."
+            end
+        end
+        
+        local unread_indicator = conv.unread_count > 0 and (" (" .. conv.unread_count .. ")") or ""
+        local time_str = textutils.formatTime(conv.last_message_time, true)
+        
+        if conv.unread_count > 0 then
+            term.setTextColor(colors.yellow)
+            print(i .. ". " .. conv.contact_name .. unread_indicator .. " [NEW]")
+        else
+            term.setTextColor(colors.white)
+            print(i .. ". " .. conv.contact_name .. unread_indicator)
+        end
+        
+        term.setTextColor(colors.lightGray)
+        print("   " .. preview .. " - " .. time_str)
+        term.setTextColor(colors.white)
+        print("")
+    end
+    
+    print("Enter conversation number to open, or B to go back:")
+end
+
+-- CONVERSATION SCREEN - Now properly implemented
+local function drawConversationScreen(contact_id)
+    term.clear()
+    term.setCursorPos(1, 1)
+    
+    local contact_name = getContactName(contact_id)
+    print("=== CONVERSATION WITH " .. string.upper(contact_name) .. " ===")
+    print("")
+    
+    -- Mark conversation as read when opened
+    markConversationRead(contact_id)
+    
+    -- Get messages for this conversation
+    local conversation_messages = {}
+    for _, msg in ipairs(messages) do
+        if (msg.from_id == contact_id and msg.to_id == computer_id) or 
+           (msg.from_id == computer_id and msg.to_id == contact_id) then
+            table.insert(conversation_messages, msg)
+        end
+    end
+    
+    if #conversation_messages == 0 then
+        print("No messages in this conversation yet.")
+    else
+        -- Show last 10 messages
+        local start_index = math.max(1, #conversation_messages - 9)
+        
+        for i = start_index, #conversation_messages do
+            local msg = conversation_messages[i]
+            local time_str = textutils.formatTime(msg.timestamp, true)
+            local sender_name = (msg.from_id == computer_id) and "You" or contact_name
+            
+            if msg.from_id == computer_id then
+                term.setTextColor(colors.lightBlue)
+                print("[" .. time_str .. "] You: " .. msg.content)
+            else
+                term.setTextColor(colors.white)
+                print("[" .. time_str .. "] " .. sender_name .. ": " .. msg.content)
+            end
+        end
+        
+        if #conversation_messages > 10 then
+            term.setTextColor(colors.lightGray)
+            print("(" .. (#conversation_messages - 10) .. " older messages)")
+        end
+    end
+    
+    term.setTextColor(colors.white)
+    print("")
+    print("Options:")
+    print("R. Reply to this conversation")
+    print("A. Add contact (save " .. contact_name .. ")")
+    print("B. Back to messages")
+end
+
+-- SEND MESSAGE SCREEN - Now properly implemented
+local function drawSendMessageScreen()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== SEND MESSAGE ===")
+    print("")
+    
+    local user_list = {}
+    for id, user in pairs(online_users) do
+        if id ~= computer_id then
+            table.insert(user_list, {id = id, data = user})
+        end
+    end
+    
+    -- Add contacts who might not be online
+    for id, contact in pairs(contacts) do
+        local found = false
+        for _, user in ipairs(user_list) do
+            if user.id == id then
+                found = true
+                break
+            end
+        end
+        if not found then
+            table.insert(user_list, {id = id, data = {username = contact.name, device_type = "offline"}})
+        end
+    end
+    
+    if #user_list == 0 then
+        print("No users available.")
+        print("Make sure people are online or add some contacts first.")
+        print("")
+        print("Press any key to return...")
+        os.pullEvent("key")
+        return
+    end
+    
+    print("Available recipients:")
+    for i, user in ipairs(user_list) do
+        local is_online = user.data.device_type ~= "offline"
+        
+        if is_online then
+            term.setTextColor(colors.green)
+            print(i .. ". " .. user.data.username .. " [ONLINE]")
+        else
+            term.setTextColor(colors.red)
+            print(i .. ". " .. user.data.username .. " [OFFLINE]")
+        end
+        term.setTextColor(colors.white)
+    end
+    
+    print("")
+    print("Enter recipient number:")
+    local user_choice = tonumber(read())
+    
+    if user_choice and user_choice >= 1 and user_choice <= #user_list then
+        local target_user = user_list[user_choice]
+        print("")
+        print("To: " .. target_user.data.username)
+        print("Message:")
+        local message_content = read()
+        
+        if message_content and message_content ~= "" then
+            sendDirectMessage(target_user.id, message_content)
+            print("")
+            print("Message sent!")
+            sleep(1)
+        end
+    end
+end
+
+-- CONTACTS SCREEN - Now properly implemented
+local function drawContactsScreen()
+    term.clear()
+    term.setCursorPos(1, 1)
+    drawHeader()
+    
+    if next(contacts) == nil then
+        print("No contacts saved yet.")
+        print("")
+        print("You can add contacts by:")
+        print("- Messaging someone and then adding them")
+        print("- Adding online users manually")
+        print("")
+        print("A. Add contact manually")
+        print("B. Back to main menu")
+        return
+    end
+    
+    print("Saved Contacts:")
+    print("")
+    
+    local contact_list = {}
+    for id, contact in pairs(contacts) do
+        table.insert(contact_list, {id = id, data = contact})
+    end
+    table.sort(contact_list, function(a, b) return a.data.name < b.data.name end)
+    
+    for i, contact in ipairs(contact_list) do
+        local is_online = online_users[contact.id] ~= nil
+        if is_online then
+            term.setTextColor(colors.green)
+            print(i .. ". " .. contact.data.name .. " [ONLINE]")
+        else
+            term.setTextColor(colors.red)
+            print(i .. ". " .. contact.data.name .. " [OFFLINE]")
+        end
+        term.setTextColor(colors.lightGray)
+        print("   ID: " .. contact.id)
+        term.setTextColor(colors.white)
+    end
+    
+    print("")
+    print("Options:")
+    print("A. Add contact manually")
+    print("M. Message a contact")
+    print("D. Delete a contact")
+    print("B. Back to main menu")
+end
+
+-- ONLINE USERS SCREEN - Now properly implemented
+local function drawOnlineUsersScreen()
+    term.clear()
+    term.setCursorPos(1, 1)
+    drawHeader()
+    
+    if next(online_users) == nil then
+        print("No users online currently.")
+        print("Try refreshing the user list.")
+        print("")
+        print("R. Refresh")
+        print("B. Back to main menu")
+        return
+    end
+    
+    print("Online Users:")
+    print("")
+    
+    local user_list = {}
+    for id, user in pairs(online_users) do
+        if id ~= computer_id then
+            table.insert(user_list, {id = id, data = user})
+        end
+    end
+    table.sort(user_list, function(a, b) return a.data.username < b.data.username end)
+    
+    for i, user in ipairs(user_list) do
+        local device_icon = user.data.device_type == "terminal" and "[T]" or "[C]"
+        
+        if user.data.device_type == "terminal" then
+            term.setTextColor(colors.cyan)
+        else
+            term.setTextColor(colors.blue)
+        end
+        
+        print(i .. ". " .. device_icon .. " " .. user.data.username)
+        
+        if contacts[user.id] then
+            term.setTextColor(colors.yellow)
+            print("   [SAVED CONTACT]")
+        end
+        
+        term.setTextColor(colors.lightGray)
+        print("   ID: " .. user.id)
+        term.setTextColor(colors.white)
+    end
+    
+    print("")
+    print("Options:")
+    print("M. Message a user")
+    print("A. Add user as contact")
+    print("R. Refresh list")
+    print("B. Back to main menu")
 end
 
 local function drawSecurityLoginScreen()
@@ -1162,15 +1514,17 @@ local function handleMainScreenInput()
     if input == "1" then
         current_screen = "messages"
     elseif input == "2" then
-        current_screen = "contacts"
+        current_screen = "send_message"
     elseif input == "3" then
+        current_screen = "contacts"
+    elseif input == "4" then
         current_screen = "online_users"
         requestUserList()
-    elseif input == "4" then
-        current_screen = "emergency"  -- Always go to emergency screen
     elseif input == "5" then
-        current_screen = "settings"
+        current_screen = "emergency"
     elseif input == "6" then
+        current_screen = "settings"
+    elseif input == "7" then
         current_screen = "about"
     elseif input:lower() == "q" and is_terminal then
         return false
@@ -1178,47 +1532,186 @@ local function handleMainScreenInput()
     return true
 end
 
-local function sendNewMessage()
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("=== NEW MESSAGE ===")
-    print("")
+-- Handle messages screen input
+local function handleMessagesScreenInput()
+    local input = read()
     
-    local user_list = {}
-    for id, user in pairs(online_users) do
-        if id ~= computer_id then
-            table.insert(user_list, {id = id, data = user})
-        end
-    end
-    
-    if #user_list == 0 then
-        print("No users online.")
-        print("Press any key to return...")
-        os.pullEvent("key")
+    if input:lower() == "b" then
+        current_screen = "main"
         return
     end
     
-    print("Online Users:")
-    for i, user in ipairs(user_list) do
-        print(i .. ". " .. user.data.username)
+    local choice = tonumber(input)
+    if choice then
+        local conversations, conversation_order = getConversations()
+        if choice >= 1 and choice <= #conversation_order then
+            selected_conversation = conversation_order[choice]
+            current_screen = "conversation"
+        end
     end
+end
+
+-- Handle conversation screen input
+local function handleConversationScreenInput()
+    local input = read()
     
-    print("")
-    print("Enter user number:")
-    local user_choice = tonumber(read())
-    
-    if user_choice and user_choice >= 1 and user_choice <= #user_list then
-        local target_user = user_list[user_choice]
+    if input:lower() == "b" then
+        current_screen = "messages"
+        selected_conversation = nil
+    elseif input:lower() == "r" then
+        -- Reply - send a message to the current conversation contact
         print("")
-        print("To: " .. target_user.data.username)
-        print("Message:")
+        print("Reply to " .. getContactName(selected_conversation) .. ":")
         local message_content = read()
         
         if message_content and message_content ~= "" then
-            sendDirectMessage(target_user.id, message_content)
+            sendDirectMessage(selected_conversation, message_content)
             print("")
             print("Message sent!")
             sleep(1)
+            -- Refresh conversation screen
+        end
+    elseif input:lower() == "a" then
+        -- Add contact
+        print("")
+        print("Save contact name for " .. getContactName(selected_conversation) .. ":")
+        local contact_name = read()
+        
+        if contact_name and contact_name ~= "" then
+            addContact(selected_conversation, contact_name)
+            print("")
+            print("Contact saved!")
+            sleep(1)
+        end
+    end
+end
+
+-- Handle contacts screen input
+local function handleContactsScreenInput()
+    local input = read()
+    
+    if input:lower() == "b" then
+        current_screen = "main"
+    elseif input:lower() == "a" then
+        print("")
+        print("Enter contact name:")
+        local name = read()
+        if name and name ~= "" then
+            print("Enter contact ID:")
+            local id = tonumber(read())
+            if id then
+                addContact(id, name)
+                print("")
+                print("Contact added!")
+                sleep(1)
+            end
+        end
+    elseif input:lower() == "m" then
+        print("")
+        print("Enter contact number to message:")
+        local contact_num = tonumber(read())
+        if contact_num then
+            local contact_list = {}
+            for id, contact in pairs(contacts) do
+                table.insert(contact_list, {id = id, data = contact})
+            end
+            table.sort(contact_list, function(a, b) return a.data.name < b.data.name end)
+            
+            if contact_num >= 1 and contact_num <= #contact_list then
+                local contact = contact_list[contact_num]
+                print("")
+                print("Message to " .. contact.data.name .. ":")
+                local message_content = read()
+                
+                if message_content and message_content ~= "" then
+                    sendDirectMessage(contact.id, message_content)
+                    print("")
+                    print("Message sent!")
+                    sleep(1)
+                end
+            end
+        end
+    elseif input:lower() == "d" then
+        print("")
+        print("Enter contact number to delete:")
+        local contact_num = tonumber(read())
+        if contact_num then
+            local contact_list = {}
+            for id, contact in pairs(contacts) do
+                table.insert(contact_list, {id = id, data = contact})
+            end
+            table.sort(contact_list, function(a, b) return a.data.name < b.data.name end)
+            
+            if contact_num >= 1 and contact_num <= #contact_list then
+                local contact = contact_list[contact_num]
+                print("Delete " .. contact.data.name .. "? (y/n)")
+                local confirm = read()
+                if confirm:lower() == "y" then
+                    contacts[contact.id] = nil
+                    saveData()
+                    print("Contact deleted!")
+                    sleep(1)
+                end
+            end
+        end
+    end
+end
+
+-- Handle online users screen input
+local function handleOnlineUsersScreenInput()
+    local input = read()
+    
+    if input:lower() == "b" then
+        current_screen = "main"
+    elseif input:lower() == "r" then
+        requestUserList()
+    elseif input:lower() == "m" then
+        print("")
+        print("Enter user number to message:")
+        local user_num = tonumber(read())
+        if user_num then
+            local user_list = {}
+            for id, user in pairs(online_users) do
+                if id ~= computer_id then
+                    table.insert(user_list, {id = id, data = user})
+                end
+            end
+            table.sort(user_list, function(a, b) return a.data.username < b.data.username end)
+            
+            if user_num >= 1 and user_num <= #user_list then
+                local user = user_list[user_num]
+                print("")
+                print("Message to " .. user.data.username .. ":")
+                local message_content = read()
+                
+                if message_content and message_content ~= "" then
+                    sendDirectMessage(user.id, message_content)
+                    print("")
+                    print("Message sent!")
+                    sleep(1)
+                end
+            end
+        end
+    elseif input:lower() == "a" then
+        print("")
+        print("Enter user number to add as contact:")
+        local user_num = tonumber(read())
+        if user_num then
+            local user_list = {}
+            for id, user in pairs(online_users) do
+                if id ~= computer_id then
+                    table.insert(user_list, {id = id, data = user})
+                end
+            end
+            table.sort(user_list, function(a, b) return a.data.username < b.data.username end)
+            
+            if user_num >= 1 and user_num <= #user_list then
+                local user = user_list[user_num]
+                addContact(user.id, user.data.username)
+                print("")
+                print("Contact added!")
+                sleep(1)
+            end
         end
     end
 end
@@ -1241,10 +1734,7 @@ local function main()
     
     loadData()
     
-    -- Don't prompt for username on startup - user can change it in settings
-    -- getUsername() will always return something reasonable
-    
-    print("PoggishTown Phone Starting...")
+    print("PoggishTown Phone v2.1 Starting...")
     print("User: " .. getUsername())
     print("Device: " .. (is_terminal and "Terminal" or "Computer"))
     print("Modem: " .. (modem_side or "None") .. " (" .. config.modem_type_override .. ")")
@@ -1262,7 +1752,7 @@ local function main()
     
     current_screen = "main"
     local presence_timer = os.startTimer(30)
-    local refresh_timer = os.startTimer(1)  -- Short timer for screen refreshes
+    local refresh_timer = os.startTimer(1)
     
     while true do
         if current_screen == "main" then
@@ -1270,6 +1760,25 @@ local function main()
             if not handleMainScreenInput() then
                 break
             end
+        elseif current_screen == "messages" then
+            drawMessagesScreen()
+            handleMessagesScreenInput()
+        elseif current_screen == "conversation" then
+            if selected_conversation then
+                drawConversationScreen(selected_conversation)
+                handleConversationScreenInput()
+            else
+                current_screen = "messages"
+            end
+        elseif current_screen == "send_message" then
+            drawSendMessageScreen()
+            current_screen = "main"
+        elseif current_screen == "contacts" then
+            drawContactsScreen()
+            handleContactsScreenInput()
+        elseif current_screen == "online_users" then
+            drawOnlineUsersScreen()
+            handleOnlineUsersScreenInput()
         elseif current_screen == "security_login" then
             drawSecurityLoginScreen()
             
@@ -1372,43 +1881,27 @@ local function main()
                 print("Logged out of security features")
                 sleep(1)
             end
-        elseif current_screen == "messages" then
-            term.clear()
-            term.setCursorPos(1, 1)
-            drawHeader()
-            print("Messages feature - under construction")
-            print("Press any key to return...")
-            os.pullEvent("key")
-            current_screen = "main"
-        elseif current_screen == "contacts" then
-            term.clear()
-            term.setCursorPos(1, 1)
-            drawHeader()
-            print("Contacts feature - under construction")
-            print("Press any key to return...")
-            os.pullEvent("key")
-            current_screen = "main"
-        elseif current_screen == "online_users" then
-            term.clear()
-            term.setCursorPos(1, 1)
-            drawHeader()
-            print("Online users feature - under construction")
-            print("Press any key to return...")
-            os.pullEvent("key")
-            current_screen = "main"
         elseif current_screen == "about" then
             term.clear()
             term.setCursorPos(1, 1)
             print("=== ABOUT ===")
-            print("PoggishTown Phone v2.0")
+            print("PoggishTown Phone v2.1")
             print("Modern messaging with security integration")
             print("")
             print("Features:")
-            print("- Server-based authentication")
-            print("- Emergency alert system")
-            print("- Configurable modem detection")
+            print("- Server-based message relay")
+            print("- Real-time messaging and delivery")
             print("- Contact management")
-            print("- Real-time messaging")
+            print("- Conversation threading")
+            print("- Emergency alert system")
+            print("- Configurable notifications")
+            print("")
+            print("Fixed in v2.1:")
+            print("- Complete messaging interface")
+            print("- Proper message viewing and sending")
+            print("- Conversation threading")
+            print("- Contact management UI")
+            print("- Improved server reliability")
             print("")
             print("Press any key to return...")
             os.pullEvent("key")
@@ -1450,7 +1943,7 @@ local function main()
         )
     end
     
-    print("PoggishTown Phone shutting down...")
+    print("PoggishTown Phone v2.1 shutting down...")
     saveData()
 end
 
