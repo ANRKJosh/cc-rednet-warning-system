@@ -437,6 +437,12 @@ local function handleMessage(sender_id, message, protocol)
                     online_users[user_id] = user_data
                 end
             end
+        elseif message.type == "app_update_notification" then
+            -- Show update notification
+            if message.app_name then
+                print("\n[UPDATE] " .. message.app_name .. " v" .. message.new_version .. " available!")
+                print("Check App Store for updates")
+            end
         else
             addDebugLog("RCV: Unhandled phone message: " .. (message.type or "unknown"))
         end
@@ -565,6 +571,7 @@ local function showMainMenu()
     end
     
     print("6. Settings")
+    print("7. App Store")
     print("D. Debug Info")
     if is_terminal then
         print("Q. Quit")
@@ -1152,6 +1159,183 @@ local function showSettings()
     end
 end
 
+local function showAppStore()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== APP STORE ===")
+    print("Device: " .. (is_terminal and "Terminal" or "Computer"))
+    if isAuthenticated() then
+        term.setTextColor(colors.green)
+        print("Security: AUTHENTICATED")
+        term.setTextColor(colors.white)
+    else
+        term.setTextColor(colors.red)
+        print("Security: NOT AUTHENTICATED")
+        term.setTextColor(colors.white)
+    end
+    print("")
+    
+    -- Request app list
+    print("Requesting apps from server...")
+    local message = {
+        type = "app_list_request",
+        from_id = computer_id,
+        device_type = is_terminal and "terminal" or "computer",
+        timestamp = os.time()
+    }
+    rednet.broadcast(message, PHONE_PROTOCOL)
+    
+    local apps_received = {}
+    local start_time = os.clock()
+    
+    -- Wait for response
+    while (os.clock() - start_time) < 5 do
+        local sender_id, response, protocol = rednet.receive(nil, 0.5)
+        
+        if sender_id and protocol == PHONE_PROTOCOL then
+            if response.type == "app_list_response" then
+                apps_received = response.apps or {}
+                break
+            end
+        end
+    end
+    
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== AVAILABLE APPS ===")
+    print("")
+    
+    local app_count = 0
+    local app_list = {}
+    
+    for app_id, app_data in pairs(apps_received) do
+        app_count = app_count + 1
+        table.insert(app_list, {id = app_id, data = app_data})
+    end
+    
+    if app_count == 0 then
+        term.setTextColor(colors.red)
+        print("No apps available for your device")
+        term.setTextColor(colors.white)
+        print("")
+        if is_terminal then
+            print("Terminals can typically access:")
+            print("- Communication apps (like this phone)")
+        else
+            print("Computers can access:")
+            print("- Security apps (requires authentication)")
+            print("- Admin tools (requires authentication)")
+        end
+        print("")
+        print("If you need security access, authenticate first")
+    else
+        print("Available Apps:")
+        print("")
+        
+        for i, app in ipairs(app_list) do
+            local category = app.data.category or "general"
+            
+            if category == "security" then
+                term.setTextColor(colors.red)
+            elseif category == "communication" then
+                term.setTextColor(colors.blue)
+            else
+                term.setTextColor(colors.white)
+            end
+            
+            print(i .. ". " .. app.data.name .. " v" .. app.data.version)
+            term.setTextColor(colors.lightGray)
+            print("   " .. app.data.description)
+            term.setTextColor(colors.white)
+        end
+        
+        print("")
+        print("Enter app number to get download info:")
+        local choice = read()
+        local app_num = tonumber(choice)
+        
+        if app_num and app_num >= 1 and app_num <= #app_list then
+            local selected_app = app_list[app_num]
+            
+            print("")
+            print("Getting download info for " .. selected_app.data.name .. "...")
+            
+            local download_msg = {
+                type = "app_download_request",
+                app_id = selected_app.id,
+                from_id = computer_id,
+                timestamp = os.time()
+            }
+            rednet.broadcast(download_msg, PHONE_PROTOCOL)
+            
+            -- Wait for download response
+            local download_start = os.clock()
+            while (os.clock() - download_start) < 10 do
+                local sender_id, response, protocol = rednet.receive(nil, 0.5)
+                
+                if sender_id and protocol == PHONE_PROTOCOL then
+                    if response.type == "app_download_response" and response.app_id == selected_app.id then
+                        print("")
+                        term.setTextColor(colors.green)
+                        print("[OK] Download info received!")
+                        term.setTextColor(colors.white)
+                        print("")
+                        print("App: " .. response.name .. " v" .. response.version)
+                        print("Install as: " .. response.install_name)
+                        print("")
+                        print("Download command:")
+                        term.setTextColor(colors.yellow)
+                        print("wget " .. response.download_url .. " " .. response.install_name)
+                        term.setTextColor(colors.white)
+                        print("")
+                        print("Then run: " .. response.install_name)
+                        break
+                        
+                    elseif response.type == "app_download_error" and response.app_id == selected_app.id then
+                        print("")
+                        term.setTextColor(colors.red)
+                        print("[FAIL] " .. response.error)
+                        term.setTextColor(colors.white)
+                        if response.reason == "authentication_required" then
+                            print("You need security authentication first")
+                            print("Go to Emergency Alerts > Login")
+                        end
+                        break
+                    end
+                end
+            end
+        end
+    end
+    
+    print("")
+    print("Press any key to return...")
+    os.pullEvent("key")
+end
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== DEBUG INFO ===")
+    print("Computer ID: " .. computer_id)
+    print("Device Type: " .. (is_terminal and "Terminal" or "Computer"))
+    print("Username: " .. getUsername())
+    print("Authenticated: " .. tostring(isAuthenticated()))
+    print("Active Alarms: " .. tableCount(active_alarms))
+    print("Online Users: " .. tableCount(online_users))
+    print("Stored Messages: " .. #messages)
+    print("")
+    
+    print("Recent Debug Log:")
+    if #debug_log > 0 then
+        for _, entry in ipairs(debug_log) do
+            print("  " .. entry)
+        end
+    else
+        print("  No debug entries")
+    end
+    
+    print("\nPress any key to return...")
+    os.pullEvent("key")
+end
+
 local function showDebugInfo()
     term.clear()
     term.setCursorPos(1, 1)
@@ -1235,6 +1419,8 @@ local function main()
             showEmergencyAlerts()
         elseif choice == "6" then
             showSettings()
+        elseif choice == "7" then
+            showAppStore()
         elseif choice:lower() == "d" then
             showDebugInfo()
         elseif choice:lower() == "q" and is_terminal then
